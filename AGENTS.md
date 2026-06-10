@@ -62,6 +62,15 @@ docker compose down
 uv add <package>
 ```
 
+## Testing
+
+Test behavior, not implementation. If renaming an internal function breaks a test, the test is wrong.
+
+- **Real database.** Each test runs inside a transaction that rolls back after. Tests are isolated, fast, and leave no residue.
+- **No real network.** Use Playwright's `page.route()` to serve fixture content from `tests/fixtures/`. Deterministic, offline-friendly.
+- **Don't mock internals.** Mock at the boundary only: tmp dirs for storage, route interception for the browser. If you feel the urge to mock something inside a module, the module probably needs a cleaner seam.
+- **Keep it minimal.** Few, meaningful tests that cover the actual workflow. No tests for getters, no tests that just assert a mock was called.
+
 ## Linting and formatting
 
 Pre-commit hooks run automatically on every commit:

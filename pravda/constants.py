@@ -15,6 +15,7 @@ BROWSER_HEADLESS = False
 
 # Database
 DATABASE_URL = os.environ["DATABASE_URL"]
+TEST_DATABASE_URL = os.environ.get("TEST_DATABASE_URL", DATABASE_URL + "_test")
 
 # File storage base path (local: relative path, production: gs://bucket-name)
 STORAGE_BASE_PATH = os.environ["STORAGE_BASE_PATH"]
