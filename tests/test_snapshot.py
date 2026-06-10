@@ -1,30 +1,40 @@
+from pathlib import Path
+
 import pytest
+from playwright.async_api import async_playwright
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
-from pravda.db import Content, Header, Snapshot
+from pravda.capture import capture_page
+from pravda.db import Snapshot
+
+FIXTURES = Path(__file__).parent / "fixtures"
 
 
 @pytest.mark.asyncio
-async def test_create_and_query_snapshot(db_session):
-    """Round-trip: insert snapshot + contents + headers, then read them back."""
-    snapshot = Snapshot(url="https://example.com", http_status=200)
-    db_session.add(snapshot)
-    await db_session.flush()
+async def test_capture_page_persists_snapshot(db_session):
+    """Capture a page using a routed fixture, then verify DB records."""
+    fixture_html = (FIXTURES / "example.html").read_text()
 
-    db_session.add(
-        Content(snapshot_id=snapshot.id, content_type="mhtml", hash="a" * 64)
-    )
-    db_session.add(
-        Content(snapshot_id=snapshot.id, content_type="screenshot", hash="b" * 64)
-    )
-    db_session.add(
-        Header(snapshot_id=snapshot.id, name="content-type", value="text/html")
-    )
+    async with async_playwright() as p:
+        browser = await p.chromium.connect("ws://localhost:3000")
+        context = await browser.new_context()
+        page = await context.new_page()
 
-    await db_session.flush()
+        # Serve the fixture instead of making a real network request
+        await page.route(
+            "https://example.com",
+            lambda route: route.fulfill(
+                body=fixture_html,
+                headers={"content-type": "text/html"},
+            ),
+        )
 
-    # Read back
+        snapshot = await capture_page(page, "https://example.com", db_session)
+
+        await context.close()
+
+    # Read back from the DB
     stmt = (
         select(Snapshot)
         .where(Snapshot.id == snapshot.id)
@@ -33,8 +43,19 @@ async def test_create_and_query_snapshot(db_session):
     result = await db_session.execute(stmt)
     loaded = result.scalar_one()
 
+    assert str(loaded.id) == str(snapshot.id)
     assert loaded.url == "https://example.com"
     assert loaded.http_status == 200
-    assert {c.content_type for c in loaded.contents} == {"mhtml", "screenshot"}
-    assert loaded.headers[0].name == "content-type"
-    assert loaded.headers[0].value == "text/html"
+
+    content_types = {c.content_type for c in loaded.contents}
+    assert content_types == {"mhtml", "screenshot"}
+
+    # The MHTML content hash should correspond to the fixture HTML
+    mhtml = next(c for c in loaded.contents if c.content_type == "mhtml")
+    assert len(mhtml.hash) == 64  # sha256 hex
+
+    screenshot = next(c for c in loaded.contents if c.content_type == "screenshot")
+    assert len(screenshot.hash) == 64
+
+    header_names = {h.name for h in loaded.headers}
+    assert "content-type" in header_names

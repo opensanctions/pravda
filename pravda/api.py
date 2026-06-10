@@ -9,8 +9,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from pravda.db import Content, Header, Snapshot, get_session, init_db
-from pravda.storage import put_blob
+from pravda.capture import capture_page
+from pravda.db import Snapshot, get_session, init_db
 
 BROWSER_CHANNEL = "chrome"
 BROWSER_WS_URL = os.environ["BROWSER_WS_URL"]
@@ -65,7 +65,6 @@ async def create_snapshot(
     body: SnapshotCreate,
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, str]:
-    # 1. Connect to browser, capture page
     async with async_playwright() as p:
         browser = await p.chromium.connect(
             BROWSER_WS_URL,
@@ -76,45 +75,9 @@ async def create_snapshot(
         context = await browser.new_context()
         page = await context.new_page()
 
-        response = await page.goto(body.url, wait_until="networkidle")
-        http_status = response.status if response else 0
-
-        # Collect headers
-        resp_headers: dict[str, str] = {}
-        if response:
-            raw = await response.all_headers()
-            resp_headers = {k.lower(): v for k, v in raw.items()}
-
-        mhtml_bytes = await page.content()
-        mhtml_bytes = mhtml_bytes.encode("utf-8")
-
-        screenshot_bytes = await page.screenshot(full_page=True)
+        snapshot = await capture_page(page, body.url, session)
 
         await context.close()
-
-    # 2. Store blobs
-    mhtml_hash = await put_blob(mhtml_bytes)
-    screenshot_hash = await put_blob(screenshot_bytes)
-
-    # 3. Persist snapshot row
-    snapshot = Snapshot(url=body.url, http_status=http_status)
-    session.add(snapshot)
-    await session.flush()
-
-    session.add(Content(snapshot_id=snapshot.id, content_type="mhtml", hash=mhtml_hash))
-    session.add(
-        Content(
-            snapshot_id=snapshot.id,
-            content_type="screenshot",
-            hash=screenshot_hash,
-        )
-    )
-
-    for name, value in resp_headers.items():
-        session.add(Header(snapshot_id=snapshot.id, name=name, value=value))
-
-    await session.commit()
-    logger.info("Saved snapshot %s for %s", snapshot.id, body.url)
 
     return {"id": str(snapshot.id)}
 
