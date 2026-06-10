@@ -15,7 +15,6 @@ from pravda.db import Snapshot, get_session, init_db
 
 BROWSER_CHANNEL = "chrome"
 BROWSER_WS_URL = os.environ["BROWSER_WS_URL"]
-USER_AGENT = os.environ["USER_AGENT"]
 
 logger = logging.getLogger(__name__)
 
@@ -84,7 +83,7 @@ async def create_snapshot(
                 ),
             },
         )
-        context = await browser.new_context(user_agent=USER_AGENT)
+        context = await browser.new_context()
         page = await context.new_page()
 
         snapshot = await capture_page(page, body.url, session)

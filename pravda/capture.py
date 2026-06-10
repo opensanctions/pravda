@@ -39,11 +39,15 @@ async def capture_page(page: Page, url: str, session: AsyncSession) -> Snapshot:
     session.add(snapshot)
     await session.flush()
 
-    session.add(Content(snapshot_id=snapshot.id, content_type="mhtml", hash=mhtml_hash))
+    session.add(
+        Content(
+            snapshot_id=snapshot.id, content_type="multipart/related", hash=mhtml_hash
+        )
+    )
     session.add(
         Content(
             snapshot_id=snapshot.id,
-            content_type="screenshot",
+            content_type="image/png",
             hash=screenshot_hash,
         )
     )
