@@ -37,6 +37,7 @@ pravda/
 - Environment-specific config goes in `.env`, loaded via `python-dotenv` in `pravda/constants.py`.
 - True constants (paths, format strings, etc.) live in `pravda/constants.py`.
 - Access config through `constants.py`, never call `os.environ` or `dotenv` elsewhere.
+- Use the Python `logging` module for logging. Get loggers with `logging.getLogger(__name__)`.
 
 ## Running
 
@@ -63,7 +64,6 @@ Don't install playwright browsers locally (`playwright install`). The browser li
 
 - Don't add CLI frameworks (click, typer, argparse) yet.
 - Don't add configuration management beyond .env + constants.py (no pydantic-settings).
-- Don't add logging frameworks yet. `print()` is fine.
 - Don't add type stubs or mypy config yet.
 - Don't abstract the browser connection behind a wrapper class yet.
 - Don't add tests yet. We're still figuring out what the code should look like.
