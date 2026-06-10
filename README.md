@@ -16,18 +16,15 @@ Pravda is the evidence layer — a service that other services build on. It uses
 Requires [uv](https://docs.astral.sh/uv/) and Docker.
 
 ```bash
+# Start containers (Playwright browser + Postgres)
+docker compose up -d
+
 # Install dependencies
 uv sync
-
-# Build and start the browser container
-docker compose up -d --build browser
 ```
 
 ## Usage
 
 ```bash
-# Run the API server
 uv run uvicorn pravda.api:app --reload --env-file .env
-
-
 ```
