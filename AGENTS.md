@@ -38,6 +38,7 @@ pravda/
 - True constants (paths, format strings, etc.) live in `pravda/constants.py`.
 - Access config through `constants.py`, never call `os.environ` or `dotenv` elsewhere.
 - Use the Python `logging` module for logging. Get loggers with `logging.getLogger(__name__)`.
+- Don't run git commands. The user manages commits, branching, etc.
 
 ## Running
 
@@ -57,3 +58,10 @@ docker compose down
 ```bash
 uv add <package>
 ```
+
+## Linting and formatting
+
+Pre-commit hooks run automatically on every commit:
+
+- **ruff check --fix**
+- **ruff format**

@@ -7,7 +7,9 @@ from pravda.constants import BROWSER_CHANNEL, BROWSER_HEADLESS, BROWSER_WS_URL
 
 
 async def main():
-    launch_options = json.dumps({"channel": BROWSER_CHANNEL, "headless": BROWSER_HEADLESS})
+    launch_options = json.dumps(
+        {"channel": BROWSER_CHANNEL, "headless": BROWSER_HEADLESS}
+    )
 
     async with async_playwright() as pw:
         browser = await pw.chromium.connect(
