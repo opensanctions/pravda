@@ -1,7 +1,9 @@
 [project]
 name = "pravda"
 version = "0.1.0"
-description = "Add your description here"
+description = "Evidence layer: MHTML archives and screenshots of web pages"
 readme = "README.md"
 requires-python = ">=3.13"
-dependencies = []
+dependencies = [
+    "playwright>=1.60.0",
+]
