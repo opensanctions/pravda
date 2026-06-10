@@ -29,10 +29,12 @@ async def capture_page(page: Page, url: str, session: AsyncSession) -> Snapshot:
     await cdp.detach()
 
     screenshot_bytes = await page.screenshot(full_page=True)
+    rendered_html = (await page.content()).encode("utf-8")
 
     # Store blobs
     mhtml_hash = await put_blob(mhtml_bytes)
     screenshot_hash = await put_blob(screenshot_bytes)
+    rendered_html_hash = await put_blob(rendered_html)
 
     # Persist snapshot row
     snapshot = Snapshot(url=url, http_status=http_status)
@@ -49,6 +51,13 @@ async def capture_page(page: Page, url: str, session: AsyncSession) -> Snapshot:
             snapshot_id=snapshot.id,
             content_type="image/png",
             hash=screenshot_hash,
+        )
+    )
+    session.add(
+        Content(
+            snapshot_id=snapshot.id,
+            content_type="text/html",
+            hash=rendered_html_hash,
         )
     )
 

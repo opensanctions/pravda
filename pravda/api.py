@@ -90,6 +90,7 @@ async def create_snapshot(
 
         await context.close()
 
+    await session.commit()
     return {"id": snapshot.id}
 
 
