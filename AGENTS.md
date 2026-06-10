@@ -14,7 +14,7 @@ Pravda is the evidence layer — a service that other services build on. It capt
 - **Python** 3.13+ managed by **uv**.
 - **FastAPI** — HTTP API for service-to-service access.
 - **Playwright** (Python) connecting over WebSocket to a Docker container.
-- Docker container runs Chrome in a virtual framebuffer (xvfb), exposed via `playwright run-server`.
+- Docker container runs **headed** Chrome in a virtual framebuffer (xvfb), exposed via `playwright run-server`. Headed mode avoids headless-detection fingerprinting that some sites use to block scrapers.
 - Launch options (`channel`, `headless`, etc.) are sent from the Python client via the `x-playwright-launch-options` WebSocket header — no custom server JS needed.
 
 ## Project structure
