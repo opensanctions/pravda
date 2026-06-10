@@ -57,13 +57,3 @@ docker compose down
 ```bash
 uv add <package>
 ```
-
-Don't install playwright browsers locally (`playwright install`). The browser lives in Docker.
-
-## What not to do
-
-- Don't add CLI frameworks (click, typer, argparse) yet.
-- Don't add configuration management beyond .env + constants.py (no pydantic-settings).
-- Don't add type stubs or mypy config yet.
-- Don't abstract the browser connection behind a wrapper class yet.
-- Don't add tests yet. We're still figuring out what the code should look like.
