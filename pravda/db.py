@@ -1,3 +1,4 @@
+import os
 import uuid
 from collections.abc import AsyncGenerator
 from datetime import datetime
@@ -7,9 +8,7 @@ from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
-from pravda.constants import DATABASE_URL
-
-engine = create_async_engine(DATABASE_URL)
+engine = create_async_engine(os.environ["DATABASE_URL"])
 async_session = async_sessionmaker(engine, expire_on_commit=False)
 
 

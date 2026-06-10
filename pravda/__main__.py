@@ -1,9 +1,14 @@
 import asyncio
 import json
+import os
 
+from dotenv import load_dotenv
 from playwright.async_api import async_playwright
 
-from pravda.constants import BROWSER_CHANNEL, BROWSER_HEADLESS, BROWSER_WS_URL
+load_dotenv()
+
+BROWSER_CHANNEL = "chrome"
+BROWSER_HEADLESS = False
 
 
 async def main():
@@ -13,7 +18,7 @@ async def main():
 
     async with async_playwright() as pw:
         browser = await pw.chromium.connect(
-            BROWSER_WS_URL,
+            os.environ["BROWSER_WS_URL"],
             headers={"x-playwright-launch-options": launch_options},
         )
         page = await browser.new_page()

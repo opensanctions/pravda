@@ -1,13 +1,12 @@
+import os
 from collections.abc import AsyncGenerator
-from pathlib import Path
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
-from pravda.constants import TEST_DATABASE_URL
 from pravda.db import Base
 
-engine = create_async_engine(TEST_DATABASE_URL)
+engine = create_async_engine(os.environ["TEST_DATABASE_URL"])
 
 
 @pytest.fixture(scope="session")
@@ -31,10 +30,3 @@ async def db_session(db_engine) -> AsyncGenerator[AsyncSession, None]:
     await session.close()
     await transaction.rollback()
     await connection.close()
-
-
-@pytest.fixture()
-def storage_dir(tmp_path: Path, monkeypatch):
-    """Redirect blob storage to a temp directory."""
-    monkeypatch.setattr("pravda.constants.STORAGE_BASE_PATH", str(tmp_path / "blobs"))
-    return tmp_path / "blobs"

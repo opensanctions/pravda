@@ -1,15 +1,19 @@
 import logging
+import os
 import uuid
 
 from fastapi import Depends, FastAPI, HTTPException
+from playwright.async_api import async_playwright
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from pravda.constants import BROWSER_CHANNEL, BROWSER_WS_URL
 from pravda.db import Content, Header, Snapshot, get_session, init_db
 from pravda.storage import put_blob
+
+BROWSER_CHANNEL = "chrome"
+BROWSER_WS_URL = os.environ["BROWSER_WS_URL"]
 
 logger = logging.getLogger(__name__)
 
@@ -61,8 +65,6 @@ async def create_snapshot(
     body: SnapshotCreate,
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, str]:
-    from playwright.async_api import async_playwright
-
     # 1. Connect to browser, capture page
     async with async_playwright() as p:
         browser = await p.chromium.connect(
@@ -83,7 +85,6 @@ async def create_snapshot(
             raw = await response.all_headers()
             resp_headers = {k.lower(): v for k, v in raw.items()}
 
-        mhtml_bytes = (await page.context.storage_state()).encode()  # fallback
         mhtml_bytes = await page.content()
         mhtml_bytes = mhtml_bytes.encode("utf-8")
 

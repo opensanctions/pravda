@@ -6,7 +6,7 @@ from pravda.storage import get_blob, put_blob
 
 
 @pytest.mark.asyncio
-async def test_put_and_get_blob(storage_dir):
+async def test_put_and_get_blob():
     data = b"hello pravda"
     expected_hash = hashlib.sha256(data).hexdigest()
 
@@ -18,7 +18,7 @@ async def test_put_and_get_blob(storage_dir):
 
 
 @pytest.mark.asyncio
-async def test_put_blob_deduplicates(storage_dir):
+async def test_put_blob_deduplicates():
     data = b"same content twice"
 
     hash1 = await put_blob(data)
@@ -27,6 +27,6 @@ async def test_put_blob_deduplicates(storage_dir):
 
 
 @pytest.mark.asyncio
-async def test_get_blob_missing(storage_dir):
+async def test_get_blob_missing():
     with pytest.raises(FileNotFoundError):
         await get_blob("0" * 64)
