@@ -2,11 +2,6 @@
 
 Pravda is the evidence layer — a service that other services build on. It captures and stores durable, addressable evidence of web pages (MHTML archives, screenshots, headers, metadata) that downstream services can inspect, diff, and reason over.
 
-It exposes two interfaces:
-
-- **FastAPI** for service-to-service access (HTTP API).
-- **Typer** for local CLI usage.
-
 ## Project philosophy
 
 - Early-stage. No backward compatibility. No fallback behaviors.
@@ -18,7 +13,6 @@ It exposes two interfaces:
 
 - **Python** 3.13+ managed by **uv**.
 - **FastAPI** — HTTP API for service-to-service access.
-- **Typer** — CLI for local usage.
 - **Playwright** (Python) connecting over WebSocket to a Docker container.
 - Docker container runs Chrome in a virtual framebuffer (xvfb), exposed via `playwright run-server`.
 - Launch options (`channel`, `headless`, etc.) are sent from the Python client via the `x-playwright-launch-options` WebSocket header — no custom server JS needed.
@@ -57,9 +51,6 @@ docker compose up -d browser
 
 # Run the API server
 uv run uvicorn pravda.api:app --reload
-
-# CLI usage
-uv run pravda --help
 
 # Stop the browser container
 docker compose down
