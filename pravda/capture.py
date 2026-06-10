@@ -23,11 +23,15 @@ async def capture_page(page: Page, url: str, session: AsyncSession) -> Snapshot:
         raw = await response.all_headers()
         resp_headers = {k.lower(): v for k, v in raw.items()}
 
-    html_bytes = (await page.content()).encode("utf-8")
+    cdp = await page.context.new_cdp_session(page)
+    mhtml_response = await cdp.send("Page.captureSnapshot", {"format": "mhtml"})
+    mhtml_bytes = mhtml_response["data"].encode("utf-8")
+    await cdp.detach()
+
     screenshot_bytes = await page.screenshot(full_page=True)
 
     # Store blobs
-    html_hash = await put_blob(html_bytes)
+    mhtml_hash = await put_blob(mhtml_bytes)
     screenshot_hash = await put_blob(screenshot_bytes)
 
     # Persist snapshot row
@@ -35,7 +39,7 @@ async def capture_page(page: Page, url: str, session: AsyncSession) -> Snapshot:
     session.add(snapshot)
     await session.flush()
 
-    session.add(Content(snapshot_id=snapshot.id, content_type="mhtml", hash=html_hash))
+    session.add(Content(snapshot_id=snapshot.id, content_type="mhtml", hash=mhtml_hash))
     session.add(
         Content(
             snapshot_id=snapshot.id,
