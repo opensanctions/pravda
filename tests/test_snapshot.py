@@ -13,17 +13,6 @@ from pravda.db import Snapshot
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
-# HTML that blocks `load` by holding open a never-resolving resource.
-# DOMContentLoaded fires immediately (DOM is fully parsed), but the
-# browser waits forever for the image — perfect for testing the
-# "DOMContentLoaded fires, load never does" scenario.
-BLOCK_LOAD_HTML = """\
-<!DOCTYPE html>
-<html><head><title>Blocking</title></head>
-<body><h1>Load is blocked</h1><img src="/slow-resource.png"></body>
-</html>
-"""
-
 
 @pytest.mark.asyncio
 async def test_capture_page_returns_evidence(browser: Browser):
@@ -114,7 +103,7 @@ async def test_http_commit_captured_when_load_times_out(browser: Browser):
     await page.route(
         "https://slow.example.com",
         lambda route: route.fulfill(
-            body=BLOCK_LOAD_HTML,
+            body=(FIXTURES / "blocking.html").read_text(),
             headers={"content-type": "text/html", "x-test": "yes"},
         ),
     )
