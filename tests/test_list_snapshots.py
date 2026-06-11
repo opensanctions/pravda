@@ -6,7 +6,7 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from pravda.api import app
-from pravda.db import Content, Header, Snapshot
+from pravda.db import ConditionType, Content, Header, Snapshot
 
 
 @pytest.fixture()
@@ -33,6 +33,7 @@ async def _insert_snapshot(
         url=url,
         captured_at=captured_at,
         http_status=http_status,
+        condition_type=ConditionType.lifecycle,
         condition="load",
         condition_met=True,
     )

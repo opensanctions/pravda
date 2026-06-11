@@ -6,7 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from pravda.capture import capture_page
-from pravda.db import Snapshot
+from pravda.db import ConditionType, Snapshot
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -46,6 +46,7 @@ async def test_capture_page_persists_snapshot(db_session):
     assert str(loaded.id) == str(snapshot.id)
     assert loaded.url == "https://example.com"
     assert loaded.http_status == 200
+    assert loaded.condition_type == ConditionType.lifecycle
     assert loaded.condition == "load"
     assert loaded.condition_met is True
 
@@ -106,6 +107,7 @@ async def test_capture_page_timeout_stores_partial_snapshot(db_session):
 
     assert loaded.url == "https://timeout.example.com"
     assert loaded.http_status is None  # unknown — goto never returned
+    assert loaded.condition_type == ConditionType.lifecycle
     assert loaded.condition == "load"
     assert loaded.condition_met is False
     assert loaded.error is not None  # Playwright timeout message

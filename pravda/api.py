@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from pravda.capture import capture_page
-from pravda.db import Snapshot, get_session, init_db
+from pravda.db import ConditionType, Snapshot, get_session, init_db
 from pravda.storage import content_path
 
 BROWSER_CHANNEL = "chrome"
@@ -34,7 +34,8 @@ async def startup() -> None:
 
 class SnapshotCreate(BaseModel):
     url: HttpUrl
-    wait_until: str = "load"
+    condition_type: ConditionType = ConditionType.lifecycle
+    condition: str = "load"
 
 
 class ContentOut(BaseModel):
@@ -53,6 +54,7 @@ class SnapshotOut(BaseModel):
     captured_at: str
     http_status: int | None = None
     error: str | None = None
+    condition_type: ConditionType
     condition: str
     condition_met: bool
     contents: list[ContentOut]
@@ -111,6 +113,7 @@ def _snapshot_out(s: Snapshot) -> SnapshotOut:
         captured_at=s.captured_at.isoformat(),
         http_status=s.http_status,
         error=s.error,
+        condition_type=s.condition_type,
         condition=s.condition,
         condition_met=s.condition_met,
         contents=[
@@ -141,7 +144,11 @@ async def create_snapshot(
             page = await context.new_page()
 
             snapshot = await capture_page(
-                page, str(body.url), session, wait_until=body.wait_until
+                page,
+                str(body.url),
+                session,
+                condition_type=body.condition_type,
+                condition=body.condition,
             )
 
             await context.close()
@@ -151,7 +158,8 @@ async def create_snapshot(
             url=str(body.url),
             http_status=None,
             error=error,
-            condition=body.wait_until,
+            condition_type=body.condition_type,
+            condition=body.condition,
             condition_met=False,
             contents=[],
             headers=[],

@@ -4,14 +4,18 @@ from playwright.async_api import Page
 from playwright.async_api import TimeoutError as PlaywrightTimeout
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from pravda.db import Content, Header, Snapshot
+from pravda.db import ConditionType, Content, Header, Snapshot
 from pravda.storage import put_blob
 
 logger = logging.getLogger(__name__)
 
 
 async def capture_page(
-    page: Page, url: str, session: AsyncSession, wait_until: str = "load"
+    page: Page,
+    url: str,
+    session: AsyncSession,
+    condition_type: ConditionType = ConditionType.lifecycle,
+    condition: str = "load",
 ) -> Snapshot:
     """Navigate to *url*, capture evidence, store blobs, persist to *session*.
 
@@ -22,13 +26,22 @@ async def capture_page(
     resp_headers: dict[str, str] = {}
 
     try:
-        response = await page.goto(url, wait_until=wait_until)
+        if condition_type is ConditionType.lifecycle:
+            response = await page.goto(url, wait_until=condition)
+        else:
+            response = await page.goto(url)
+            await page.wait_for_selector(condition)
         if response:
             http_status = response.status
             raw = await response.all_headers()
             resp_headers = {k.lower(): v for k, v in raw.items()}
     except PlaywrightTimeout:
-        logger.warning("Timeout waiting for %s (condition=%s)", url, wait_until)
+        logger.warning(
+            "Timeout waiting for %s (condition_type=%s, condition=%s)",
+            url,
+            condition_type.value,
+            condition,
+        )
         condition_met = False
 
     cdp = await page.context.new_cdp_session(page)
@@ -50,7 +63,8 @@ async def capture_page(
     snapshot = Snapshot(
         url=url,
         http_status=http_status,
-        condition=wait_until,
+        condition_type=condition_type,
+        condition=condition,
         condition_met=condition_met,
     )
     snapshot.contents = [
