@@ -41,6 +41,10 @@ pravda/
 - Use the Python `logging` module for logging. Get loggers with `logging.getLogger(__name__)`.
 - Don't run git commands. The user manages commits, branching, etc.
 
+## Storage and access model
+
+Pravda uses content-addressed storage (SHA-256 hashes as filenames). The API returns file paths in snapshot responses — there is no blob download endpoint. Downstream services that share access to the same storage (local volume, S3 bucket, GCS bucket) can read files directly from the returned path. Pravda is the evidence capture layer, not a content delivery proxy.
+
 ## Running
 
 ```bash
