@@ -12,6 +12,7 @@ from sqlalchemy.orm import selectinload
 
 from pravda.capture import capture_page
 from pravda.db import Snapshot, get_session, init_db
+from pravda.storage import content_path
 
 BROWSER_CHANNEL = "chrome"
 BROWSER_WS_URL = os.environ["BROWSER_WS_URL"]
@@ -116,7 +117,7 @@ async def get_snapshot(
         captured_at=snapshot.captured_at.isoformat(),
         http_status=snapshot.http_status,
         contents=[
-            ContentOut(content_type=c.content_type, path=c.hash)
+            ContentOut(content_type=c.content_type, path=content_path(c.hash))
             for c in snapshot.contents
         ],
         headers=[HeaderOut(name=h.name, value=h.value) for h in snapshot.headers],
