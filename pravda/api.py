@@ -5,7 +5,7 @@ import uuid
 
 from fastapi import Depends, FastAPI, Query
 from playwright.async_api import async_playwright
-from pydantic import BaseModel
+from pydantic import BaseModel, HttpUrl
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -32,7 +32,7 @@ async def startup() -> None:
 
 
 class SnapshotCreate(BaseModel):
-    url: str
+    url: HttpUrl
 
 
 class ContentOut(BaseModel):
@@ -129,7 +129,7 @@ async def create_snapshot(
         context = await browser.new_context()
         page = await context.new_page()
 
-        snapshot = await capture_page(page, body.url, session)
+        snapshot = await capture_page(page, str(body.url), session)
 
         await context.close()
 
