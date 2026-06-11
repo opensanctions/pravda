@@ -11,7 +11,7 @@ from pravda.storage import put_blob
 logger = logging.getLogger(__name__)
 
 # Timeout for the page navigation itself.
-NAV_TIMEOUT_MS = 30_000
+NAV_TIMEOUT_MS = 10_000
 # Timeout for capture operations after navigation (MHTML, screenshot, etc.).
 # These can hang if the page is in a half-loaded state.
 CAPTURE_TIMEOUT_MS = 15_000
@@ -117,8 +117,6 @@ async def capture_page(
             "Skipping captures for %s — page never reached DOMContentLoaded",
             url,
         )
-
-    await cdp.detach()
 
     # --- Store blobs ----------------------------------------------------
     contents: list[Content] = []
