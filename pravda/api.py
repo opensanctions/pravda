@@ -3,13 +3,15 @@ import logging
 import os
 import uuid
 
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, Query
 from playwright.async_api import async_playwright
 from pydantic import BaseModel
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from pravda.capture import capture_page
-from pravda.db import get_session, init_db
+from pravda.db import Snapshot, get_session, init_db
 from pravda.storage import content_path
 
 BROWSER_CHANNEL = "chrome"
@@ -52,6 +54,11 @@ class SnapshotOut(BaseModel):
     headers: list[HeaderOut]
 
 
+class SnapshotsOut(BaseModel):
+    items: list[SnapshotOut]
+    total: int
+
+
 class HealthOut(BaseModel):
     status: str
 
@@ -59,9 +66,50 @@ class HealthOut(BaseModel):
 # --- Endpoints ---
 
 
+PAGE_SIZE = 10
+
+
 @app.get("/health")
 async def health() -> HealthOut:
     return HealthOut(status="ok")
+
+
+@app.get("/snapshots", response_model=SnapshotsOut)
+async def list_snapshots(
+    url: str = Query(..., description="Exact URL to look up snapshots for"),
+    page: int = Query(1, ge=1, description="Page number (1-indexed)"),
+    session: AsyncSession = Depends(get_session),
+) -> SnapshotsOut:
+    total_stmt = select(func.count()).select_from(Snapshot).where(Snapshot.url == url)
+    total = (await session.execute(total_stmt)).scalar_one()
+
+    rows_stmt = (
+        select(Snapshot)
+        .where(Snapshot.url == url)
+        .order_by(Snapshot.captured_at.desc())
+        .offset((page - 1) * PAGE_SIZE)
+        .limit(PAGE_SIZE)
+        .options(selectinload(Snapshot.contents), selectinload(Snapshot.headers))
+    )
+    rows = (await session.execute(rows_stmt)).scalars().all()
+
+    return SnapshotsOut(
+        items=[
+            SnapshotOut(
+                id=s.id,
+                url=s.url,
+                captured_at=s.captured_at.isoformat(),
+                http_status=s.http_status,
+                contents=[
+                    ContentOut(content_type=c.content_type, path=content_path(c.hash))
+                    for c in s.contents
+                ],
+                headers=[HeaderOut(name=h.name, value=h.value) for h in s.headers],
+            )
+            for s in rows
+        ],
+        total=total,
+    )
 
 
 @app.post("/snapshots", response_model=SnapshotOut)
