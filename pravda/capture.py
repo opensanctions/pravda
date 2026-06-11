@@ -1,4 +1,3 @@
-import asyncio
 import logging
 
 from playwright.async_api import Page
@@ -10,11 +9,11 @@ from pravda.storage import put_blob
 
 logger = logging.getLogger(__name__)
 
-# Timeout for the page navigation itself.
+# Timeout for navigation (reaching "commit" — first HTTP response received).
 NAV_TIMEOUT_MS = 10_000
-# Timeout for capture operations after navigation (MHTML, screenshot, etc.).
-# These can hang if the page is in a half-loaded state.
-CAPTURE_TIMEOUT_MS = 15_000
+
+# Timeout for waiting on the page condition after navigation.
+CONDITION_TIMEOUT_MS = 30_000
 
 
 async def capture_page(
@@ -23,12 +22,12 @@ async def capture_page(
     session: AsyncSession,
     condition_type: ConditionType = ConditionType.lifecycle,
     condition: str = "load",
+    condition_timeout_ms: int = CONDITION_TIMEOUT_MS,
 ) -> Snapshot:
     """Navigate to *url*, capture evidence, store blobs, persist to *session*.
 
     Returns the ``Snapshot`` row (flushed, not committed — caller decides).
     """
-    condition_met = True
     http_status: int | None = None
     resp_headers: dict[str, str] = {}
     error: str | None = None
@@ -43,110 +42,91 @@ async def capture_page(
         lambda params: lifecycle_events.append(params["name"]),
     )
 
-    # --- Navigation ------------------------------------------------------
+    # --- Navigation: reach "commit" to grab the HTTP response, then wait
+    #     for the requested condition. Headers/status are captured between
+    #     the two steps, so a condition timeout still records the response.
+    condition_met = False
     try:
-        if condition_type is ConditionType.lifecycle:
-            response = await page.goto(
-                url, wait_until=condition, timeout=NAV_TIMEOUT_MS
-            )
-        else:
-            response = await page.goto(url, timeout=NAV_TIMEOUT_MS)
-            await page.wait_for_selector(condition, timeout=NAV_TIMEOUT_MS)
-    except PlaywrightTimeout as exc:
-        logger.warning(
-            "Timeout waiting for %s (condition_type=%s, condition=%s)",
-            url,
-            condition_type.value,
-            condition,
-        )
-        condition_met = False
-        error = str(exc)
-        response = None  # type: ignore[assignment]
-
-    # Grab HTTP response (available even when load/selector times out).
-    if response is not None:
+        response = await page.goto(url, wait_until="commit", timeout=NAV_TIMEOUT_MS)
         http_status = response.status
         raw = await response.all_headers()
         resp_headers = {k.lower(): v for k, v in raw.items()}
 
+        if condition_type is ConditionType.lifecycle:
+            await page.wait_for_load_state(condition, timeout=condition_timeout_ms)
+        else:
+            await page.wait_for_selector(condition, timeout=condition_timeout_ms)
+        condition_met = True
+    except PlaywrightTimeout as exc:
+        logger.warning(
+            "Timeout for %s (condition_type=%s, condition=%s): %s",
+            url,
+            condition_type.value,
+            condition,
+            exc,
+        )
+        error = str(exc)
+
     logger.info("Lifecycle events for %s: %s", url, lifecycle_events)
 
     # --- Capture page content -------------------------------------------
-    # If the condition timed out, only capture when the page reached at
-    # least DOMContentLoaded — otherwise there is no meaningful content.
-    should_capture = condition_met or "DOMContentLoaded" in lifecycle_events
-
     mhtml_bytes: bytes | None = None
     screenshot_bytes: bytes | None = None
     rendered_html: bytes | None = None
     inner_text: bytes | None = None
 
+    # Capture only if the DOM finished parsing — otherwise there is no
+    # meaningful content. This holds whether the condition was met or it
+    # timed out after DOMContentLoaded (e.g. a stalled subresource).
+    should_capture = "DOMContentLoaded" in lifecycle_events
+
     if should_capture:
         try:
-            mhtml_response = await asyncio.wait_for(
-                cdp.send("Page.captureSnapshot", {"format": "mhtml"}),
-                timeout=CAPTURE_TIMEOUT_MS / 1000,
-            )
+            mhtml_response = await cdp.send("Page.captureSnapshot", {"format": "mhtml"})
             mhtml_bytes = mhtml_response["data"].encode("utf-8")
-        except (PlaywrightTimeout, asyncio.TimeoutError):
-            logger.warning("Timeout capturing MHTML for %s", url)
+        except Exception as exc:
+            logger.warning("Failed to capture MHTML for %s: %s", url, exc)
+
+        if "load" in lifecycle_events:
+            try:
+                screenshot_bytes = await page.screenshot(full_page=True)
+            except PlaywrightTimeout:
+                logger.warning("Timeout capturing screenshot for %s", url)
+        else:
+            logger.warning("Skipping screenshot for %s — page never reached load", url)
 
         try:
-            screenshot_bytes = await page.screenshot(
-                full_page=True, timeout=CAPTURE_TIMEOUT_MS
-            )
-        except PlaywrightTimeout:
-            logger.warning("Timeout capturing screenshot for %s", url)
-
-        try:
-            rendered_html = await asyncio.wait_for(
-                page.content(), timeout=CAPTURE_TIMEOUT_MS / 1000
-            )
+            rendered_html = await page.content()
             rendered_html = rendered_html.encode("utf-8")
-        except (PlaywrightTimeout, asyncio.TimeoutError):
-            logger.warning("Timeout capturing rendered HTML for %s", url)
+        except Exception as exc:
+            logger.warning("Failed to capture HTML for %s: %s", url, exc)
 
         try:
-            inner_text = (
-                await page.inner_text("body", timeout=CAPTURE_TIMEOUT_MS)
-            ).encode("utf-8")
+            inner_text = (await page.inner_text("body")).encode("utf-8")
         except PlaywrightTimeout:
             logger.warning("Timeout capturing inner text for %s", url)
     else:
         logger.warning(
-            "Skipping captures for %s — page never reached DOMContentLoaded",
-            url,
+            "Skipping captures for %s — page never reached DOMContentLoaded", url
         )
 
     # --- Store blobs ----------------------------------------------------
     contents: list[Content] = []
     if mhtml_bytes is not None:
         contents.append(
-            Content(
-                content_type="multipart/related",
-                hash=await put_blob(mhtml_bytes),
-            )
+            Content(content_type="multipart/related", hash=await put_blob(mhtml_bytes))
         )
     if screenshot_bytes is not None:
         contents.append(
-            Content(
-                content_type="image/png",
-                hash=await put_blob(screenshot_bytes),
-            )
+            Content(content_type="image/png", hash=await put_blob(screenshot_bytes))
         )
     if rendered_html is not None:
         contents.append(
-            Content(
-                content_type="text/html",
-                hash=await put_blob(rendered_html),
-            )
+            Content(content_type="text/html", hash=await put_blob(rendered_html))
         )
     if inner_text is not None:
         contents.append(
-            Content(
-                content_type="text/plain",
-                hash=await put_blob(inner_text),
-            )
+            Content(content_type="text/plain", hash=await put_blob(inner_text))
         )
 
     # --- Persist snapshot row -------------------------------------------

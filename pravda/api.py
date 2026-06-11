@@ -183,7 +183,6 @@ async def create_snapshot(
     body: SnapshotCreate,
     session: AsyncSession = Depends(get_session),
 ) -> SnapshotOut:
-    error: str | None = None
     try:
         async with async_playwright() as p:
             browser = await p.chromium.connect(

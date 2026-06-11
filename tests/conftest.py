@@ -2,6 +2,7 @@ import os
 from collections.abc import AsyncGenerator
 
 import pytest
+from playwright.async_api import async_playwright
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from pravda.db import Base
@@ -17,6 +18,15 @@ async def db_engine():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
     await engine.dispose()
+
+
+@pytest.fixture(scope="session")
+async def browser():
+    pw = await async_playwright().start()
+    browser = await pw.chromium.connect("ws://localhost:3000")
+    yield browser
+    await browser.close()
+    await pw.stop()
 
 
 @pytest.fixture()
