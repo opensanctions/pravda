@@ -36,7 +36,7 @@ class SnapshotCreate(BaseModel):
 
 class ContentOut(BaseModel):
     content_type: str
-    hash: str
+    path: str
 
 
 class HeaderOut(BaseModel):
@@ -116,7 +116,7 @@ async def get_snapshot(
         captured_at=snapshot.captured_at.isoformat(),
         http_status=snapshot.http_status,
         contents=[
-            ContentOut(content_type=c.content_type, hash=c.hash)
+            ContentOut(content_type=c.content_type, path=c.hash)
             for c in snapshot.contents
         ],
         headers=[HeaderOut(name=h.name, value=h.value) for h in snapshot.headers],

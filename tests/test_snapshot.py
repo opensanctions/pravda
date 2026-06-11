@@ -48,7 +48,12 @@ async def test_capture_page_persists_snapshot(db_session):
     assert loaded.http_status == 200
 
     content_types = {c.content_type for c in loaded.contents}
-    assert content_types == {"multipart/related", "image/png"}
+    assert content_types == {
+        "multipart/related",
+        "image/png",
+        "text/html",
+        "text/plain",
+    }
 
     # The MHTML content hash should correspond to the fixture HTML
     mhtml = next(c for c in loaded.contents if c.content_type == "multipart/related")
