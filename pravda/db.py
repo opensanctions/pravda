@@ -5,7 +5,7 @@ from collections.abc import AsyncGenerator
 from datetime import datetime
 
 from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Integer, Text, func
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import ARRAY, UUID
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -39,6 +39,9 @@ class Snapshot(Base):
     )
     condition: Mapped[str] = mapped_column(Text, nullable=False)
     condition_met: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    lifecycle_events: Mapped[list[str]] = mapped_column(
+        ARRAY(Text), nullable=False, default=list
+    )
 
     contents: Mapped[list["Content"]] = relationship(back_populates="snapshot")
     headers: Mapped[list["Header"]] = relationship(back_populates="snapshot")

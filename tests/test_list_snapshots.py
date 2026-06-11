@@ -36,6 +36,7 @@ async def _insert_snapshot(
         condition_type=ConditionType.lifecycle,
         condition="load",
         condition_met=True,
+        lifecycle_events=["init", "commit", "DOMContentLoaded", "load"],
     )
     snapshot.contents = [
         Content(content_type="text/html", hash="a" * 64, snapshot=snapshot),

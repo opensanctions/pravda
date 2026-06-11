@@ -71,15 +71,16 @@ async def test_capture_page_persists_snapshot(db_session):
 
 
 @pytest.mark.asyncio
-async def test_capture_page_timeout_stores_partial_snapshot(db_session):
-    """A load-timeout still captures artifacts with condition_met=False."""
+async def test_capture_page_timeout_no_lifecycle_skips_captures(db_session):
+    """A timeout before any lifecycle event fires skips captures entirely."""
 
     async with async_playwright() as p:
         browser = await p.chromium.connect("ws://localhost:3000")
         context = await browser.new_context()
         page = await context.new_page()
 
-        # Mock goto to raise timeout immediately — no real waiting
+        # Mock goto to raise timeout immediately — no real waiting,
+        # no lifecycle events fire.
         async def fake_goto(*args, **kwargs):
             raise PlaywrightTimeout("Navigation timeout")
 
@@ -106,12 +107,40 @@ async def test_capture_page_timeout_stores_partial_snapshot(db_session):
     assert loaded.condition == "load"
     assert loaded.condition_met is False
     assert loaded.error is not None  # Playwright timeout message
+    assert loaded.lifecycle_events == []
 
-    # Artifacts should still be captured (page was open, just not fully loaded)
-    content_types = {c.content_type for c in loaded.contents}
-    assert content_types == {
-        "multipart/related",
-        "image/png",
-        "text/html",
-        "text/plain",
-    }
+    # No lifecycle events fired, so captures were skipped
+    assert loaded.contents == []
+
+
+# --- _lifecycle_reached unit tests ---
+
+
+def test_lifecycle_reached_domcontentloaded_suffices():
+    from pravda.capture import _lifecycle_reached
+
+    events = ["init", "commit", "DOMContentLoaded"]
+    assert _lifecycle_reached(events, "DOMContentLoaded") is True
+
+
+def test_lifecycle_reached_later_event_implies_earlier():
+    from pravda.capture import _lifecycle_reached
+
+    events = ["init", "commit", "DOMContentLoaded", "firstPaint"]
+    assert _lifecycle_reached(events, "DOMContentLoaded") is True
+    assert _lifecycle_reached(events, "firstPaint") is True
+    assert _lifecycle_reached(events, "load") is False
+
+
+def test_lifecycle_reached_empty_list():
+    from pravda.capture import _lifecycle_reached
+
+    assert _lifecycle_reached([], "DOMContentLoaded") is False
+
+
+def test_lifecycle_reached_only_init_and_commit():
+    from pravda.capture import _lifecycle_reached
+
+    events = ["init", "commit"]
+    assert _lifecycle_reached(events, "DOMContentLoaded") is False
+    assert _lifecycle_reached(events, "commit") is True

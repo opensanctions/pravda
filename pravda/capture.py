@@ -1,3 +1,4 @@
+import asyncio
 import logging
 
 from playwright.async_api import Page
@@ -8,6 +9,38 @@ from pravda.db import ConditionType, Content, Header, Snapshot
 from pravda.storage import put_blob
 
 logger = logging.getLogger(__name__)
+
+# Timeout for the page navigation itself.
+NAV_TIMEOUT_MS = 30_000
+# Timeout for capture operations after navigation (MHTML, screenshot, etc.).
+# These can hang if the page is in a half-loaded state.
+CAPTURE_TIMEOUT_MS = 15_000
+
+# Canonical ordering of CDP lifecycle events. Each event implies all previous
+# ones have also fired. Used to decide whether a timed-out page has enough
+# content worth capturing.
+_LIFECYCLE_ORDER = [
+    "init",
+    "commit",
+    "DOMContentLoaded",
+    "firstPaint",
+    "firstContentfulPaint",
+    "load",
+    "networkAlmostIdle",
+    "networkIdle",
+]
+
+# Minimum lifecycle event required to attempt captures after a timeout.
+_MINIMUM_LIFECYCLE = "DOMContentLoaded"
+
+
+def _lifecycle_reached(events: list[str], target: str) -> bool:
+    """Return *True* if *events* contains *target* or any event after it."""
+    target_idx = _LIFECYCLE_ORDER.index(target)
+    return any(
+        e in _LIFECYCLE_ORDER and _LIFECYCLE_ORDER.index(e) >= target_idx
+        for e in events
+    )
 
 
 async def capture_page(
@@ -25,17 +58,25 @@ async def capture_page(
     http_status: int | None = None
     resp_headers: dict[str, str] = {}
     error: str | None = None
+    lifecycle_events: list[str] = []
 
+    # --- CDP session: lifecycle tracking + MHTML capture ----------------
+    cdp = await page.context.new_cdp_session(page)
+    await cdp.send("Page.setLifecycleEventsEnabled", {"enabled": True})
+    cdp.on(
+        "Page.lifecycleEvent",
+        lambda params: lifecycle_events.append(params["name"]),
+    )
+
+    # --- Navigation ------------------------------------------------------
     try:
         if condition_type is ConditionType.lifecycle:
-            response = await page.goto(url, wait_until=condition)
+            response = await page.goto(
+                url, wait_until=condition, timeout=NAV_TIMEOUT_MS
+            )
         else:
-            response = await page.goto(url)
-            await page.wait_for_selector(condition)
-        if response:
-            http_status = response.status
-            raw = await response.all_headers()
-            resp_headers = {k.lower(): v for k, v in raw.items()}
+            response = await page.goto(url, timeout=NAV_TIMEOUT_MS)
+            await page.wait_for_selector(condition, timeout=NAV_TIMEOUT_MS)
     except PlaywrightTimeout as exc:
         logger.warning(
             "Timeout waiting for %s (condition_type=%s, condition=%s)",
@@ -45,23 +86,100 @@ async def capture_page(
         )
         condition_met = False
         error = str(exc)
+        response = None  # type: ignore[assignment]
 
-    cdp = await page.context.new_cdp_session(page)
-    mhtml_response = await cdp.send("Page.captureSnapshot", {"format": "mhtml"})
-    mhtml_bytes = mhtml_response["data"].encode("utf-8")
+    # Grab HTTP response (available even when load/selector times out).
+    if response is not None:
+        http_status = response.status
+        raw = await response.all_headers()
+        resp_headers = {k.lower(): v for k, v in raw.items()}
+
+    logger.info("Lifecycle events for %s: %s", url, lifecycle_events)
+
+    # --- Capture page content -------------------------------------------
+    # If the condition timed out, only capture when the page reached at
+    # least DOMContentLoaded — otherwise there is no meaningful content.
+    should_capture = condition_met or _lifecycle_reached(
+        lifecycle_events, _MINIMUM_LIFECYCLE
+    )
+
+    mhtml_bytes: bytes | None = None
+    screenshot_bytes: bytes | None = None
+    rendered_html: bytes | None = None
+    inner_text: bytes | None = None
+
+    if should_capture:
+        try:
+            mhtml_response = await asyncio.wait_for(
+                cdp.send("Page.captureSnapshot", {"format": "mhtml"}),
+                timeout=CAPTURE_TIMEOUT_MS / 1000,
+            )
+            mhtml_bytes = mhtml_response["data"].encode("utf-8")
+        except (PlaywrightTimeout, asyncio.TimeoutError):
+            logger.warning("Timeout capturing MHTML for %s", url)
+
+        try:
+            screenshot_bytes = await page.screenshot(
+                full_page=True, timeout=CAPTURE_TIMEOUT_MS
+            )
+        except PlaywrightTimeout:
+            logger.warning("Timeout capturing screenshot for %s", url)
+
+        try:
+            rendered_html = await asyncio.wait_for(
+                page.content(), timeout=CAPTURE_TIMEOUT_MS / 1000
+            )
+            rendered_html = rendered_html.encode("utf-8")
+        except (PlaywrightTimeout, asyncio.TimeoutError):
+            logger.warning("Timeout capturing rendered HTML for %s", url)
+
+        try:
+            inner_text = (
+                await page.inner_text("body", timeout=CAPTURE_TIMEOUT_MS)
+            ).encode("utf-8")
+        except PlaywrightTimeout:
+            logger.warning("Timeout capturing inner text for %s", url)
+    else:
+        logger.warning(
+            "Skipping captures for %s — page never reached %s",
+            url,
+            _MINIMUM_LIFECYCLE,
+        )
+
     await cdp.detach()
 
-    screenshot_bytes = await page.screenshot(full_page=True)
-    rendered_html = (await page.content()).encode("utf-8")
-    inner_text = (await page.inner_text("body")).encode("utf-8")
+    # --- Store blobs ----------------------------------------------------
+    contents: list[Content] = []
+    if mhtml_bytes is not None:
+        contents.append(
+            Content(
+                content_type="multipart/related",
+                hash=await put_blob(mhtml_bytes),
+            )
+        )
+    if screenshot_bytes is not None:
+        contents.append(
+            Content(
+                content_type="image/png",
+                hash=await put_blob(screenshot_bytes),
+            )
+        )
+    if rendered_html is not None:
+        contents.append(
+            Content(
+                content_type="text/html",
+                hash=await put_blob(rendered_html),
+            )
+        )
+    if inner_text is not None:
+        contents.append(
+            Content(
+                content_type="text/plain",
+                hash=await put_blob(inner_text),
+            )
+        )
 
-    # Store blobs
-    mhtml_hash = await put_blob(mhtml_bytes)
-    screenshot_hash = await put_blob(screenshot_bytes)
-    rendered_html_hash = await put_blob(rendered_html)
-    inner_text_hash = await put_blob(inner_text)
-
-    # Persist snapshot row
+    # --- Persist snapshot row -------------------------------------------
     snapshot = Snapshot(
         url=url,
         http_status=http_status,
@@ -69,13 +187,9 @@ async def capture_page(
         condition_type=condition_type,
         condition=condition,
         condition_met=condition_met,
+        lifecycle_events=lifecycle_events,
     )
-    snapshot.contents = [
-        Content(content_type="multipart/related", hash=mhtml_hash),
-        Content(content_type="image/png", hash=screenshot_hash),
-        Content(content_type="text/html", hash=rendered_html_hash),
-        Content(content_type="text/plain", hash=inner_text_hash),
-    ]
+    snapshot.contents = contents
     snapshot.headers = [
         Header(name=name, value=value) for name, value in resp_headers.items()
     ]

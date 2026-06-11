@@ -103,6 +103,13 @@ class SnapshotOut(BaseModel):
     condition_met: bool = Field(
         description="Whether the page condition was satisfied before capture",
     )
+    lifecycle_events: list[str] = Field(
+        description=(
+            "CDP lifecycle events that fired during navigation, "
+            "in chronological order (e.g. init, commit, DOMContentLoaded, "
+            "firstPaint, firstContentfulPaint, load)."
+        ),
+    )
     contents: list[ContentOut] = Field(description="Captured content files")
     headers: list[HeaderOut] = Field(description="Response headers from the page")
 
@@ -162,6 +169,7 @@ def _snapshot_out(s: Snapshot) -> SnapshotOut:
         condition_type=s.condition_type,
         condition=s.condition,
         condition_met=s.condition_met,
+        lifecycle_events=s.lifecycle_events or [],
         contents=[
             ContentOut(content_type=c.content_type, path=content_path(c.hash))
             for c in s.contents
@@ -207,6 +215,7 @@ async def create_snapshot(
             condition_type=body.condition_type,
             condition=body.condition,
             condition_met=False,
+            lifecycle_events=[],
             contents=[],
             headers=[],
         )
