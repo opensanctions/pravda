@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import pytest
+from playwright.async_api import TimeoutError as PlaywrightTimeout
 from playwright.async_api import async_playwright
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
@@ -78,20 +79,14 @@ async def test_capture_page_timeout_stores_partial_snapshot(db_session):
         context = await browser.new_context()
         page = await context.new_page()
 
-        # Route that never fulfills — causes goto to timeout
-        async def hang_forever(route):
-            pass  # never call route.fulfill/continue/abort
+        # Mock goto to raise timeout immediately — no real waiting
+        async def fake_goto(*args, **kwargs):
+            raise PlaywrightTimeout("Navigation timeout")
 
-        await page.route("https://timeout.example.com", hang_forever)
-
-        # Also route the favicon (browsers auto-request it) to avoid hangs
-        await page.route("**/favicon.ico", lambda route: route.abort())
-
-        # Set a very short timeout so the test doesn't wait 30s
-        page.set_default_timeout(500)  # 500ms
+        page.goto = fake_goto
 
         snapshot = await capture_page(
-            page, "https://timeout.example.com", db_session, wait_until="load"
+            page, "https://timeout.example.com", db_session, condition="load"
         )
 
         await context.close()

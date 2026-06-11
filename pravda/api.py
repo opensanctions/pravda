@@ -2,11 +2,15 @@ import json
 import logging
 import os
 import uuid
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from datetime import datetime
+from typing import Annotated, Literal
 
 from fastapi import Depends, FastAPI, Query
 from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import async_playwright
-from pydantic import BaseModel, HttpUrl
+from pydantic import BaseModel, Field, HttpUrl, model_validator
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -15,59 +19,101 @@ from pravda.capture import capture_page
 from pravda.db import ConditionType, Snapshot, get_session, init_db
 from pravda.storage import content_path
 
+LifecycleWait = Literal["load", "domcontentloaded", "networkidle", "commit"]
+
 BROWSER_CHANNEL = "chrome"
 BROWSER_WS_URL = os.environ["BROWSER_WS_URL"]
 
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="Pravda", description="Evidence layer for web pages")
 
-
-@app.on_event("startup")
-async def startup() -> None:
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await init_db()
     logger.info("Database initialized")
+    yield
+
+
+app = FastAPI(
+    title="Pravda",
+    description="Evidence layer for web pages",
+    lifespan=lifespan,
+)
 
 
 # --- Request / response models ---
 
 
 class SnapshotCreate(BaseModel):
+    """Request body for creating a new snapshot."""
+
     url: HttpUrl
-    condition_type: ConditionType = ConditionType.lifecycle
-    condition: str = "load"
+    condition_type: Annotated[
+        ConditionType,
+        Field(description="How to determine when the page is ready."),
+    ] = ConditionType.lifecycle
+    condition: Annotated[
+        str,
+        Field(
+            description=(
+                "Depends on condition_type: for 'lifecycle' one of "
+                "'load', 'domcontentloaded', 'networkidle', 'commit'. "
+                "For 'selector', a CSS selector to wait for."
+            )
+        ),
+    ] = "load"
+
+    @model_validator(mode="after")
+    def _validate_condition(self) -> "SnapshotCreate":
+        if self.condition_type is ConditionType.lifecycle:
+            valid = {"load", "domcontentloaded", "networkidle", "commit"}
+            if self.condition not in valid:
+                raise ValueError(
+                    f"condition must be one of {valid} "
+                    f"when condition_type is 'lifecycle', "
+                    f"got '{self.condition}'"
+                )
+        return self
 
 
 class ContentOut(BaseModel):
-    content_type: str
-    path: str
+    content_type: str = Field(description="MIME type of the captured content")
+    path: str = Field(description="File path where the content is stored")
 
 
 class HeaderOut(BaseModel):
-    name: str
-    value: str
+    name: str = Field(description="HTTP header name (lowercased)")
+    value: str = Field(description="HTTP header value")
 
 
 class SnapshotOut(BaseModel):
     id: uuid.UUID
-    url: str
-    captured_at: str
-    http_status: int | None = None
-    error: str | None = None
-    condition_type: ConditionType
-    condition: str
-    condition_met: bool
-    contents: list[ContentOut]
-    headers: list[HeaderOut]
+    url: HttpUrl = Field(description="The URL that was captured")
+    captured_at: datetime = Field(description="When the snapshot was taken (UTC)")
+    http_status: int | None = Field(
+        default=None,
+        description="HTTP response status code, if a response was received",
+    )
+    error: str | None = Field(
+        default=None,
+        description="Error message if the capture failed",
+    )
+    condition_type: ConditionType = Field(description="Condition type that was used")
+    condition: str = Field(description="Condition value that was used")
+    condition_met: bool = Field(
+        description="Whether the page condition was satisfied before capture",
+    )
+    contents: list[ContentOut] = Field(description="Captured content files")
+    headers: list[HeaderOut] = Field(description="Response headers from the page")
 
 
 class SnapshotsOut(BaseModel):
     items: list[SnapshotOut]
-    total: int
+    total: int = Field(description="Total number of snapshots for this URL")
 
 
 class HealthOut(BaseModel):
-    status: str
+    status: str = Field(description="Service health status")
 
 
 # --- Endpoints ---
@@ -110,7 +156,7 @@ def _snapshot_out(s: Snapshot) -> SnapshotOut:
     return SnapshotOut(
         id=s.id,
         url=s.url,
-        captured_at=s.captured_at.isoformat(),
+        captured_at=s.captured_at,
         http_status=s.http_status,
         error=s.error,
         condition_type=s.condition_type,

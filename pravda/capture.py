@@ -24,6 +24,7 @@ async def capture_page(
     condition_met = True
     http_status: int | None = None
     resp_headers: dict[str, str] = {}
+    error: str | None = None
 
     try:
         if condition_type is ConditionType.lifecycle:
@@ -35,7 +36,7 @@ async def capture_page(
             http_status = response.status
             raw = await response.all_headers()
             resp_headers = {k.lower(): v for k, v in raw.items()}
-    except PlaywrightTimeout:
+    except PlaywrightTimeout as exc:
         logger.warning(
             "Timeout waiting for %s (condition_type=%s, condition=%s)",
             url,
@@ -43,6 +44,7 @@ async def capture_page(
             condition,
         )
         condition_met = False
+        error = str(exc)
 
     cdp = await page.context.new_cdp_session(page)
     mhtml_response = await cdp.send("Page.captureSnapshot", {"format": "mhtml"})
@@ -63,6 +65,7 @@ async def capture_page(
     snapshot = Snapshot(
         url=url,
         http_status=http_status,
+        error=error,
         condition_type=condition_type,
         condition=condition,
         condition_met=condition_met,
