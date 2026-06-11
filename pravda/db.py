@@ -27,6 +27,7 @@ class Snapshot(Base):
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
     http_status: Mapped[int] = mapped_column(Integer, nullable=False)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     contents: Mapped[list["Content"]] = relationship(back_populates="snapshot")
     headers: Mapped[list["Header"]] = relationship(back_populates="snapshot")

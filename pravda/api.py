@@ -4,6 +4,8 @@ import os
 import uuid
 
 from fastapi import Depends, FastAPI, Query
+from playwright.async_api import Error as PlaywrightError
+from playwright.async_api import TimeoutError as PlaywrightTimeout
 from playwright.async_api import async_playwright
 from pydantic import BaseModel, HttpUrl
 from sqlalchemy import func, select
@@ -50,6 +52,7 @@ class SnapshotOut(BaseModel):
     url: str
     captured_at: str
     http_status: int
+    error: str | None = None
     contents: list[ContentOut]
     headers: list[HeaderOut]
 
@@ -94,21 +97,23 @@ async def list_snapshots(
     rows = (await session.execute(rows_stmt)).scalars().all()
 
     return SnapshotsOut(
-        items=[
-            SnapshotOut(
-                id=s.id,
-                url=s.url,
-                captured_at=s.captured_at.isoformat(),
-                http_status=s.http_status,
-                contents=[
-                    ContentOut(content_type=c.content_type, path=content_path(c.hash))
-                    for c in s.contents
-                ],
-                headers=[HeaderOut(name=h.name, value=h.value) for h in s.headers],
-            )
-            for s in rows
-        ],
+        items=[_snapshot_out(s) for s in rows],
         total=total,
+    )
+
+
+def _snapshot_out(s: Snapshot) -> SnapshotOut:
+    return SnapshotOut(
+        id=s.id,
+        url=s.url,
+        captured_at=s.captured_at.isoformat(),
+        http_status=s.http_status,
+        error=s.error,
+        contents=[
+            ContentOut(content_type=c.content_type, path=content_path(c.hash))
+            for c in s.contents
+        ],
+        headers=[HeaderOut(name=h.name, value=h.value) for h in s.headers],
     )
 
 
@@ -117,31 +122,28 @@ async def create_snapshot(
     body: SnapshotCreate,
     session: AsyncSession = Depends(get_session),
 ) -> SnapshotOut:
-    async with async_playwright() as p:
-        browser = await p.chromium.connect(
-            BROWSER_WS_URL,
-            headers={
-                "x-playwright-launch-options": json.dumps(
-                    {"channel": BROWSER_CHANNEL, "headless": False}
-                ),
-            },
-        )
-        context = await browser.new_context()
-        page = await context.new_page()
+    try:
+        async with async_playwright() as p:
+            browser = await p.chromium.connect(
+                BROWSER_WS_URL,
+                headers={
+                    "x-playwright-launch-options": json.dumps(
+                        {"channel": BROWSER_CHANNEL, "headless": False}
+                    ),
+                },
+            )
+            context = await browser.new_context()
+            page = await context.new_page()
 
-        snapshot = await capture_page(page, str(body.url), session)
+            snapshot = await capture_page(page, str(body.url), session)
 
-        await context.close()
+            await context.close()
+    except PlaywrightTimeout as e:
+        snapshot = Snapshot(url=str(body.url), http_status=504, error=e.message)
+        session.add(snapshot)
+    except PlaywrightError as e:
+        snapshot = Snapshot(url=str(body.url), http_status=502, error=e.message)
+        session.add(snapshot)
 
     await session.commit()
-    return SnapshotOut(
-        id=snapshot.id,
-        url=snapshot.url,
-        captured_at=snapshot.captured_at.isoformat(),
-        http_status=snapshot.http_status,
-        contents=[
-            ContentOut(content_type=c.content_type, path=content_path(c.hash))
-            for c in snapshot.contents
-        ],
-        headers=[HeaderOut(name=h.name, value=h.value) for h in snapshot.headers],
-    )
+    return _snapshot_out(snapshot)
