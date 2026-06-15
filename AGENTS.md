@@ -40,6 +40,7 @@ pravda/
 - True constants (paths, format strings, etc.) live in the module that uses them.
 - Use the Python `logging` module for logging. Get loggers with `logging.getLogger(__name__)`.
 - The user manages git commits, branching, etc.
+- Use full, descriptive variable names. No abbreviations.
 
 ## Storage and access model
 

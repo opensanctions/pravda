@@ -159,27 +159,33 @@ async def list_snapshots(
     rows = (await session.execute(rows_stmt)).scalars().all()
 
     return SnapshotsOut(
-        items=[_snapshot_out(s) for s in rows],
+        items=[_snapshot_out(row) for row in rows],
         total=total,
     )
 
 
-def _snapshot_out(s: Snapshot) -> SnapshotOut:
+def _snapshot_out(snapshot: Snapshot) -> SnapshotOut:
     return SnapshotOut(
-        id=s.id,
-        url=s.url,
-        captured_at=s.captured_at,
-        http_status=s.http_status,
-        error=s.error,
-        condition_type=s.condition_type,
-        condition=s.condition,
-        condition_met=s.condition_met,
-        lifecycle_events=s.lifecycle_events or [],
+        id=snapshot.id,
+        url=snapshot.url,
+        captured_at=snapshot.captured_at,
+        http_status=snapshot.http_status,
+        error=snapshot.error,
+        condition_type=snapshot.condition_type,
+        condition=snapshot.condition,
+        condition_met=snapshot.condition_met,
+        lifecycle_events=snapshot.lifecycle_events or [],
         contents=[
-            ContentOut(content_type=c.content_type, path=content_path(c.hash))
-            for c in s.contents
+            ContentOut(
+                content_type=content.content_type,
+                path=content_path(content.hash),
+            )
+            for content in snapshot.contents
         ],
-        headers=[HeaderOut(name=h.name, value=h.value) for h in s.headers],
+        headers=[
+            HeaderOut(name=header.name, value=header.value)
+            for header in snapshot.headers
+        ],
     )
 
 
@@ -195,8 +201,8 @@ async def create_snapshot(
         body.condition,
     )
     try:
-        async with async_playwright() as p:
-            browser = await p.chromium.connect(
+        async with async_playwright() as playwright:
+            browser = await playwright.chromium.connect(
                 BROWSER_WS_URL,
                 headers={
                     "x-playwright-launch-options": json.dumps(
@@ -215,12 +221,12 @@ async def create_snapshot(
             )
 
             await context.close()
-    except PlaywrightError as e:
+    except PlaywrightError as error:
         # Couldn't even reach the browser — record an empty, failed result.
-        logger.error("Browser error for %s: %s", body.url, e.message)
+        logger.error("Browser error for %s: %s", body.url, error.message)
         result = CaptureResult(
             http_status=None,
-            error=e.message,
+            error=error.message,
             condition_met=False,
             lifecycle_events=[],
             headers={},
