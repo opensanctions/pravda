@@ -16,6 +16,9 @@ NAV_TIMEOUT_MS = 10_000
 # Timeout for waiting on the page condition after navigation.
 CONDITION_TIMEOUT_MS = 30_000
 
+# Timeout for each individual capture operation (MHTML, screenshot, etc.).
+CAPTURE_TIMEOUT_MS = 15_000
+
 
 @dataclass
 class CapturedContent:
@@ -172,14 +175,29 @@ async def _capture_contents(
     url: str,
 ) -> list[CapturedContent]:
     async def mhtml() -> str:
-        result = await lifecycle.cdp.send("Page.captureSnapshot", {"format": "mhtml"})
+        result = await asyncio.wait_for(
+            lifecycle.cdp.send("Page.captureSnapshot", {"format": "mhtml"}),
+            CAPTURE_TIMEOUT_MS / 1000,
+        )
         return result["data"]
 
     specs = [
         ("multipart/related", "DOMContentLoaded", mhtml),
-        ("image/png", "load", lambda: page.screenshot(full_page=True)),
-        ("text/html", "DOMContentLoaded", page.content),
-        ("text/plain", "DOMContentLoaded", lambda: page.inner_text("body")),
+        (
+            "image/png",
+            "load",
+            lambda: page.screenshot(full_page=True, timeout=CAPTURE_TIMEOUT_MS),
+        ),
+        (
+            "text/html",
+            "DOMContentLoaded",
+            lambda: page.content(),
+        ),
+        (
+            "text/plain",
+            "DOMContentLoaded",
+            lambda: page.inner_text("body", timeout=CAPTURE_TIMEOUT_MS),
+        ),
     ]
 
     contents = []
@@ -206,6 +224,9 @@ async def _capture_one(
         if isinstance(data, str):
             data = data.encode()
         return CapturedContent(content_type=content_type, hash=await put_blob(data))
+    except (asyncio.TimeoutError, PlaywrightTimeout):
+        logger.warning("Timeout capturing %s for %s", content_type, url)
+        return None
     except Exception as exception:
         logger.warning("Failed to capture %s for %s: %s", content_type, url, exception)
         return None
