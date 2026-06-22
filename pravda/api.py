@@ -87,6 +87,16 @@ class HeaderOut(BaseModel):
 
 
 class SnapshotOut(BaseModel):
+    """A captured snapshot of a web page.
+
+    `plaintext`, `rendered_html`, `screenshot`, and `blob` are content-addressed
+    storage locations (a SHA-256 hex digest as the filename) under the shared
+    storage backend. Downstream services with access to that backend read the
+    files directly from the returned location — there is no blob download
+    endpoint. Each is null when that artifact was not captured (e.g. its
+    lifecycle gate never fired, or the capture timed out).
+    """
+
     id: uuid.UUID
     url: HttpUrl = Field(description="The URL that was captured")
     captured_at: datetime = Field(description="When the snapshot was taken (UTC)")
@@ -112,19 +122,30 @@ class SnapshotOut(BaseModel):
     )
     plaintext: str | None = Field(
         default=None,
-        description="Path to the captured plaintext (text/plain), or null",
+        description=(
+            "Content-addressed storage location of the page text (text/plain), or null"
+        ),
     )
     rendered_html: str | None = Field(
         default=None,
-        description="Path to the captured rendered HTML (text/html), or null",
+        description=(
+            "Content-addressed storage location of the rendered HTML "
+            "(text/html), or null"
+        ),
     )
     screenshot: str | None = Field(
         default=None,
-        description="Path to the captured full-page screenshot (image/png), or null",
+        description=(
+            "Content-addressed storage location of the full-page screenshot "
+            "(image/png), or null"
+        ),
     )
     blob: str | None = Field(
         default=None,
-        description="Path to the captured blob (MHTML today; PDF/warc later), or null",
+        description=(
+            "Content-addressed storage location of the archive blob, or null. "
+            "Its MIME type is in `blob_content_type`."
+        ),
     )
     blob_content_type: str | None = Field(
         default=None,
@@ -181,9 +202,9 @@ def _snapshot_out(snapshot: Snapshot) -> SnapshotOut:
         condition_met=snapshot.condition_met,
         lifecycle_events=snapshot.lifecycle_events or [],
         plaintext=content_path(snapshot.plaintext) if snapshot.plaintext else None,
-        rendered_html=content_path(snapshot.rendered_html)
-        if snapshot.rendered_html
-        else None,
+        rendered_html=(
+            content_path(snapshot.rendered_html) if snapshot.rendered_html else None
+        ),
         screenshot=content_path(snapshot.screenshot) if snapshot.screenshot else None,
         blob=content_path(snapshot.blob) if snapshot.blob else None,
         blob_content_type=snapshot.blob_content_type,
