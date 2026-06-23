@@ -19,14 +19,12 @@ CONDITION_TIMEOUT_MS = 30_000
 # Timeout for each individual capture operation (MHTML, screenshot, etc.).
 CAPTURE_TIMEOUT_MS = 15_000
 
-# Map our lifecycle condition names onto Playwright's wait_for_load_state
-# values. "commit" isn't here: page.goto(wait_until="commit") already reaches
-# it, so there is nothing left to wait for once goto returns.
-_LOAD_STATE = {
-    "load": "load",
-    "DOMContentLoaded": "domcontentloaded",
-    "networkIdle": "networkidle",
-}
+# Injected while screenshotting so broken layouts that extend far beyond the
+# viewport don't produce hugely wide shots. Playwright applies this before
+# measuring the full-page size, so max-width actually clamps the width.
+SCREENSHOT_STYLE = (
+    "html, body { max-width: 100vw !important; overflow-x: hidden !important; }"
+)
 
 
 @dataclass
@@ -116,9 +114,7 @@ async def _navigate(
         if condition_type is ConditionType.selector:
             await page.wait_for_selector(condition, timeout=condition_timeout_ms)
         elif condition != "commit":
-            await page.wait_for_load_state(
-                _LOAD_STATE[condition], timeout=condition_timeout_ms
-            )
+            await page.wait_for_load_state(condition, timeout=condition_timeout_ms)
 
         return _Navigation(http_status, headers, condition_met=True, error=None)
     except (PlaywrightTimeout, asyncio.TimeoutError) as exception:
@@ -180,7 +176,11 @@ async def _capture_artifacts(page: Page, url: str) -> CapturedArtifacts:
     )
     screenshot_hash = await _capture_one(
         "screenshot",
-        lambda: page.screenshot(full_page=True, timeout=CAPTURE_TIMEOUT_MS),
+        lambda: page.screenshot(
+            full_page=True,
+            style=SCREENSHOT_STYLE,
+            timeout=CAPTURE_TIMEOUT_MS,
+        ),
         url,
     )
     blob_hash = await _capture_one("blob", capture_mhtml, url)

@@ -60,7 +60,7 @@ class SnapshotCreate(BaseModel):
         Field(
             description=(
                 "Depends on condition_type: for 'lifecycle' a load state, "
-                "one of 'load', 'DOMContentLoaded', 'networkIdle', 'commit'. "
+                "one of 'load', 'domcontentloaded', 'networkidle', 'commit'. "
                 "For 'selector', a CSS selector to wait for."
             )
         ),
@@ -69,7 +69,7 @@ class SnapshotCreate(BaseModel):
     @model_validator(mode="after")
     def _validate_condition(self) -> "SnapshotCreate":
         if self.condition_type is ConditionType.lifecycle:
-            valid = {"load", "DOMContentLoaded", "networkIdle", "commit"}
+            valid = {"load", "domcontentloaded", "networkidle", "commit"}
             if self.condition not in valid:
                 raise ValueError(
                     f"condition must be one of {valid} "
