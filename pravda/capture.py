@@ -19,13 +19,6 @@ CONDITION_TIMEOUT_MS = 30_000
 # Timeout for each individual capture operation (MHTML, screenshot, etc.).
 CAPTURE_TIMEOUT_MS = 15_000
 
-# Injected while screenshotting so broken layouts that extend far beyond the
-# viewport don't produce hugely wide shots. Playwright applies this before
-# measuring the full-page size, so max-width actually clamps the width.
-SCREENSHOT_STYLE = (
-    "html, body { max-width: 100vw !important; overflow-x: hidden !important; }"
-)
-
 
 @dataclass
 class CaptureResult:
@@ -174,11 +167,22 @@ async def _capture_artifacts(page: Page, url: str) -> CapturedArtifacts:
         lambda: page.content(),
         url,
     )
+    # Use clip to constrain the screenshot width to the viewport width.
+    # CSS approaches (max-width on html/body, overflow-x: hidden, etc.) don't
+    # work because Playwright measures scrollWidth, which reports the full
+    # content width regardless of overflow settings. Clipping the output image
+    # is the only reliable way to cap the width.
+    viewport_size = page.viewport_size
+    screenshot_clip = (
+        {"x": 0, "y": 0, "width": viewport_size["width"], "height": 1 << 30}
+        if viewport_size
+        else None
+    )
     screenshot_hash = await _capture_one(
         "screenshot",
         lambda: page.screenshot(
             full_page=True,
-            style=SCREENSHOT_STYLE,
+            clip=screenshot_clip,
             timeout=CAPTURE_TIMEOUT_MS,
         ),
         url,
