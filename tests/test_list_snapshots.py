@@ -36,7 +36,6 @@ async def _insert_snapshot(
         condition_type=ConditionType.lifecycle,
         condition="load",
         condition_met=True,
-        lifecycle_events=["init", "commit", "DOMContentLoaded", "load"],
     )
     snapshot.rendered_html = "a" * 64
     snapshot.headers = [

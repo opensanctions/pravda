@@ -2,7 +2,7 @@ import asyncio
 import logging
 from dataclasses import dataclass
 
-from playwright.async_api import CDPSession, Page
+from playwright.async_api import Page
 from playwright.async_api import TimeoutError as PlaywrightTimeout
 
 from pravda.db import ConditionType
@@ -19,6 +19,15 @@ CONDITION_TIMEOUT_MS = 30_000
 # Timeout for each individual capture operation (MHTML, screenshot, etc.).
 CAPTURE_TIMEOUT_MS = 15_000
 
+# Map our lifecycle condition names onto Playwright's wait_for_load_state
+# values. "commit" isn't here: page.goto(wait_until="commit") already reaches
+# it, so there is nothing left to wait for once goto returns.
+_LOAD_STATE = {
+    "load": "load",
+    "DOMContentLoaded": "domcontentloaded",
+    "networkIdle": "networkidle",
+}
+
 
 @dataclass
 class CaptureResult:
@@ -27,7 +36,6 @@ class CaptureResult:
     http_status: int | None
     error: str | None
     condition_met: bool
-    lifecycle_events: list[str]
     headers: dict[str, str]
     plaintext_hash: str | None
     rendered_html_hash: str | None
@@ -43,26 +51,26 @@ async def capture_page(
     condition: str = "load",
     condition_timeout_ms: int = CONDITION_TIMEOUT_MS,
 ) -> CaptureResult:
-    """Navigate to *url* and capture evidence: HTTP response, lifecycle
-    events, and MHTML/screenshot/HTML/text blobs.
+    """Navigate to *url* and capture evidence: HTTP response and
+    MHTML/screenshot/HTML/text blobs.
 
     Returns the evidence as a ``CaptureResult``. Storing it is the caller's
     job — this function never touches the database.
     """
-    lifecycle = await Lifecycle.start(page)
-
     navigation = await _navigate(
-        page, lifecycle, url, condition_type, condition, condition_timeout_ms
+        page, url, condition_type, condition, condition_timeout_ms
     )
-    logger.info("Lifecycle events for %s: %s", url, lifecycle.fired)
 
-    artifacts = await _capture_artifacts(page, lifecycle, url)
+    if navigation.http_status is None:
+        # Navigation never committed — there is nothing on the page to capture.
+        artifacts = CapturedArtifacts(None, None, None, None, None)
+    else:
+        artifacts = await _capture_artifacts(page, url)
 
     return CaptureResult(
         http_status=navigation.http_status,
         error=navigation.error,
         condition_met=navigation.condition_met,
-        lifecycle_events=lifecycle.fired,
         headers=navigation.headers,
         plaintext_hash=artifacts.plaintext_hash,
         rendered_html_hash=artifacts.rendered_html_hash,
@@ -70,48 +78,6 @@ async def capture_page(
         blob_hash=artifacts.blob_hash,
         blob_content_type=artifacts.blob_content_type,
     )
-
-
-class Lifecycle:
-    """Tracks the page's CDP ``Page.lifecycleEvent`` stream.
-
-    One stream, two consumers: ``fired`` records every event name (capture
-    gating reads it), and ``wait`` blocks until a name arrives. Because the
-    single sync handler appends *before* it wakes a waiter, when ``wait``
-    returns the name is guaranteed present in ``fired`` — no cross-source race.
-    """
-
-    def __init__(self, cdp: CDPSession):
-        self.cdp = cdp
-        self.fired: list[str] = []
-        self._waiters: dict[str, asyncio.Event] = {}
-        cdp.on("Page.lifecycleEvent", self._on_event)
-
-    def _on_event(self, params) -> None:
-        name = params["name"]
-        self.fired.append(name)
-        if name in self._waiters:
-            self._waiters[name].set()
-
-    async def wait(self, name: str, timeout_ms: int) -> None:
-        """Block until lifecycle event *name* has fired, or time out.
-
-        Mirrors how Playwright's own ``wait_for_load_state`` resolves — "return
-        if already fired, else await its arrival" — but against our own stream,
-        so completion guarantees *name* is present in ``fired`` for gating.
-        """
-        if name in self.fired:
-            return
-        waiter = self._waiters.setdefault(name, asyncio.Event())
-        await asyncio.wait_for(waiter.wait(), timeout_ms / 1000)
-
-    @classmethod
-    async def start(cls, page: Page) -> "Lifecycle":
-        """Enable CDP lifecycle events on *page* and return a ready tracker."""
-        cdp = await page.context.new_cdp_session(page)
-        await cdp.send("Page.enable", {})
-        await cdp.send("Page.setLifecycleEventsEnabled", {"enabled": True})
-        return cls(cdp)
 
 
 @dataclass
@@ -124,7 +90,6 @@ class _Navigation:
 
 async def _navigate(
     page: Page,
-    lifecycle: Lifecycle,
     url: str,
     condition_type: ConditionType,
     condition: str,
@@ -135,8 +100,9 @@ async def _navigate(
     Status and headers are read at "commit" (first response), *before* the
     condition wait — so a condition timeout still records the HTTP response.
 
-    Lifecycle conditions wait on our own CDP event stream (``lifecycle.fired``);
-    selector conditions use Playwright's ``wait_for_selector``.
+    Lifecycle conditions use Playwright's ``wait_for_load_state`` ("commit"
+    needs no extra wait — ``page.goto`` already waited for it); selector
+    conditions use ``wait_for_selector``.
     """
     http_status: int | None = None
     headers: dict[str, str] = {}
@@ -147,10 +113,12 @@ async def _navigate(
             key.lower(): value for key, value in (await response.all_headers()).items()
         }
 
-        if condition_type is ConditionType.lifecycle:
-            await lifecycle.wait(condition, condition_timeout_ms)
-        else:
+        if condition_type is ConditionType.selector:
             await page.wait_for_selector(condition, timeout=condition_timeout_ms)
+        elif condition != "commit":
+            await page.wait_for_load_state(
+                _LOAD_STATE[condition], timeout=condition_timeout_ms
+            )
 
         return _Navigation(http_status, headers, condition_met=True, error=None)
     except (PlaywrightTimeout, asyncio.TimeoutError) as exception:
@@ -183,24 +151,20 @@ class CapturedArtifacts:
     blob_content_type: str | None
 
 
-# Every artifact is gated on DOMContentLoaded: we only attempt the capture
-# once the page has parsed its DOM, otherwise it would error or hang.
-async def _capture_artifacts(
-    page: Page,
-    lifecycle: Lifecycle,
-    url: str,
-) -> CapturedArtifacts:
-    # If the page never settled (load didn't fire), cancel any hanging
-    # requests so it reaches a terminal state — otherwise the screenshot and
-    # MHTML snapshot could stall on resources that never arrive. This mirrors
-    # hitting the browser's stop button.
-    if "load" not in lifecycle.fired:
-        await lifecycle.cdp.send("Page.stopLoading", {})
+async def _capture_artifacts(page: Page, url: str) -> CapturedArtifacts:
+    """Stop any pending requests, then capture the four artifacts.
+
+    Stopping the page first forces it into a terminal, capturable state —
+    otherwise screenshot/MHTML could stall on resources that never arrive.
+    This mirrors hitting the browser's stop button.
+    """
+    cdp = await page.context.new_cdp_session(page)
+    await cdp.send("Page.stopLoading", {})
 
     async def capture_mhtml() -> str:
         result = await asyncio.wait_for(
-            lifecycle.cdp.send("Page.captureSnapshot", {"format": "mhtml"}),
-            CAPTURE_TIMEOUT_MS,
+            cdp.send("Page.captureSnapshot", {"format": "mhtml"}),
+            CAPTURE_TIMEOUT_MS / 1000,
         )
         return result["data"]
 
@@ -208,26 +172,18 @@ async def _capture_artifacts(
         "plaintext",
         lambda: page.inner_text("body", timeout=CAPTURE_TIMEOUT_MS),
         url,
-        lifecycle.fired,
     )
     rendered_html_hash = await _capture_one(
         "rendered_html",
         lambda: page.content(),
         url,
-        lifecycle.fired,
     )
     screenshot_hash = await _capture_one(
         "screenshot",
         lambda: page.screenshot(full_page=True, timeout=CAPTURE_TIMEOUT_MS),
         url,
-        lifecycle.fired,
     )
-    blob_hash = await _capture_one(
-        "blob",
-        capture_mhtml,
-        url,
-        lifecycle.fired,
-    )
+    blob_hash = await _capture_one("blob", capture_mhtml, url)
 
     return CapturedArtifacts(
         plaintext_hash=plaintext_hash,
@@ -238,19 +194,8 @@ async def _capture_artifacts(
     )
 
 
-async def _capture_one(
-    name: str,
-    callback,
-    url: str,
-    lifecycle_events: list[str],
-) -> str | None:
-    """Capture one artifact via *callback* and store the blob.
-
-    Gated on DOMContentLoaded — skipped if the page never parsed its DOM.
-    """
-    if "DOMContentLoaded" not in lifecycle_events:
-        logger.warning("Skipping %s for %s — never reached DOMContentLoaded", name, url)
-        return None
+async def _capture_one(name: str, callback, url: str) -> str | None:
+    """Capture one artifact via *callback* and store the blob."""
     try:
         data = await callback()
         if isinstance(data, str):

@@ -14,7 +14,7 @@ from sqlalchemy import (
     Text,
     func,
 )
-from sqlalchemy.dialects.postgresql import ARRAY, UUID
+from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -55,9 +55,6 @@ class Snapshot(Base):
     )
     condition: Mapped[str] = mapped_column(Text, nullable=False)
     condition_met: Mapped[bool] = mapped_column(Boolean, nullable=False)
-    lifecycle_events: Mapped[list[str]] = mapped_column(
-        ARRAY(Text), nullable=False, default=list
-    )
 
     # Captured evidence. Three are fixed-MIME (their type is implicit); the
     # blob is polymorphic (multipart/related today, application/pdf and others

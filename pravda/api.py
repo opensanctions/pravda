@@ -5,7 +5,7 @@ import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import datetime
-from typing import Annotated, Literal
+from typing import Annotated
 
 from fastapi import Depends, FastAPI, Query
 from playwright.async_api import Error as PlaywrightError
@@ -18,8 +18,6 @@ from sqlalchemy.orm import selectinload
 from pravda.capture import CaptureResult, capture_page
 from pravda.db import ConditionType, Header, Snapshot, get_session, init_db
 from pravda.storage import content_path
-
-LifecycleWait = Literal["load", "domcontentloaded", "networkidle", "commit"]
 
 BROWSER_CHANNEL = "chrome"
 BROWSER_WS_URL = os.environ["BROWSER_WS_URL"]
@@ -61,9 +59,9 @@ class SnapshotCreate(BaseModel):
         str,
         Field(
             description=(
-                "Depends on condition_type: for 'lifecycle' a CDP lifecycle "
-                "event name, one of 'load', 'DOMContentLoaded', 'networkIdle', "
-                "'commit'. For 'selector', a CSS selector to wait for."
+                "Depends on condition_type: for 'lifecycle' a load state, "
+                "one of 'load', 'DOMContentLoaded', 'networkIdle', 'commit'. "
+                "For 'selector', a CSS selector to wait for."
             )
         ),
     ] = "load"
@@ -93,8 +91,8 @@ class SnapshotOut(BaseModel):
     storage locations (a SHA-256 hex digest as the filename) under the shared
     storage backend. Downstream services with access to that backend read the
     files directly from the returned location — there is no blob download
-    endpoint. Each is null when that artifact was not captured (e.g. its
-    lifecycle gate never fired, or the capture timed out).
+    endpoint. Each is null when that artifact was not captured (e.g. the
+    page never committed, or the capture timed out).
     """
 
     id: uuid.UUID
@@ -112,13 +110,6 @@ class SnapshotOut(BaseModel):
     condition: str = Field(description="Condition value that was used")
     condition_met: bool = Field(
         description="Whether the page condition was satisfied before capture",
-    )
-    lifecycle_events: list[str] = Field(
-        description=(
-            "CDP lifecycle events that fired during navigation, "
-            "in chronological order (e.g. init, commit, DOMContentLoaded, "
-            "firstPaint, firstContentfulPaint, load)."
-        ),
     )
     plaintext: str | None = Field(
         default=None,
@@ -200,7 +191,6 @@ def _snapshot_out(snapshot: Snapshot) -> SnapshotOut:
         condition_type=snapshot.condition_type,
         condition=snapshot.condition,
         condition_met=snapshot.condition_met,
-        lifecycle_events=snapshot.lifecycle_events or [],
         plaintext=content_path(snapshot.plaintext) if snapshot.plaintext else None,
         rendered_html=(
             content_path(snapshot.rendered_html) if snapshot.rendered_html else None
@@ -254,7 +244,6 @@ async def create_snapshot(
             http_status=None,
             error=error.message,
             condition_met=False,
-            lifecycle_events=[],
             headers={},
             plaintext_hash=None,
             rendered_html_hash=None,
@@ -293,7 +282,6 @@ def _build_snapshot(body: SnapshotCreate, result: CaptureResult) -> Snapshot:
         condition_type=body.condition_type,
         condition=body.condition,
         condition_met=result.condition_met,
-        lifecycle_events=result.lifecycle_events,
         plaintext=result.plaintext_hash,
         rendered_html=result.rendered_html_hash,
         screenshot=result.screenshot_hash,

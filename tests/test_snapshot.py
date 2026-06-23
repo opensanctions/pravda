@@ -50,14 +50,13 @@ async def test_capture_page_returns_evidence(browser: Browser):
 
 
 @pytest.mark.asyncio
-async def test_capture_page_timeout_no_lifecycle_skips_captures(browser: Browser):
-    """A timeout before any lifecycle event fires skips captures entirely."""
+async def test_capture_page_goto_timeout_skips_captures(browser: Browser):
+    """A navigation that never commits skips captures entirely."""
 
     context = await browser.new_context()
     page = await context.new_page()
 
-    # Mock goto to raise timeout immediately — no real waiting,
-    # no lifecycle events fire.
+    # Mock goto to raise timeout immediately — the page never commits.
     async def fake_goto(*args, **kwargs):
         raise PlaywrightTimeout("Navigation timeout")
 
@@ -70,9 +69,8 @@ async def test_capture_page_timeout_no_lifecycle_skips_captures(browser: Browser
     assert result.http_status is None  # unknown — goto never returned
     assert result.condition_met is False
     assert result.error is not None  # Playwright timeout message
-    assert result.lifecycle_events == []
 
-    # No lifecycle events fired, so captures were skipped
+    # Navigation never committed, so there is nothing to capture
     assert result.plaintext_hash is None
     assert result.rendered_html_hash is None
     assert result.screenshot_hash is None
@@ -105,9 +103,7 @@ async def test_http_commit_captured_when_load_times_out(browser: Browser):
     )
 
     # `load` waits on the blocked image and times out; DOMContentLoaded fires
-    # almost immediately. Both ride the same CDP lifecycle stream, so the
-    # timeout deterministically leaves DOMContentLoaded already recorded — no
-    # wall-clock race. A short timeout just keeps the test fast.
+    # almost immediately. A short timeout just keeps the test fast.
     result = await capture_page(
         page,
         "https://slow.example.com",
@@ -124,7 +120,7 @@ async def test_http_commit_captured_when_load_times_out(browser: Browser):
     assert result.condition_met is False
     assert result.error is not None
 
-    # DOMContentLoaded fired, so every capture ran. The screenshot went
+    # Navigation committed, so every capture ran. The screenshot went
     # through despite load timing out: pending requests are stopped first so
     # the page settles into a capturable state.
     assert result.plaintext_hash is not None
@@ -137,10 +133,6 @@ async def test_http_commit_captured_when_load_times_out(browser: Browser):
     assert "content-type" in result.headers
     assert "x-test" in result.headers
 
-    # Lifecycle events include DOMContentLoaded but not load
-    assert "DOMContentLoaded" in result.lifecycle_events
-    assert "load" not in result.lifecycle_events
-
 
 @pytest.mark.asyncio
 async def test_captured_evidence_persists(db_session):
@@ -150,7 +142,6 @@ async def test_captured_evidence_persists(db_session):
         http_status=200,
         error=None,
         condition_met=True,
-        lifecycle_events=["init", "commit", "DOMContentLoaded", "load"],
         headers={"content-type": "text/html"},
         plaintext_hash=None,
         rendered_html_hash="a" * 64,
@@ -174,7 +165,6 @@ async def test_captured_evidence_persists(db_session):
     assert loaded.url == "https://example.com/"
     assert loaded.http_status == 200
     assert loaded.condition_met is True
-    assert loaded.lifecycle_events == ["init", "commit", "DOMContentLoaded", "load"]
     assert loaded.rendered_html == "a" * 64
     assert loaded.plaintext is None
     assert loaded.screenshot is None
