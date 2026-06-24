@@ -204,7 +204,7 @@ async def _capture_one(name: str, callback, url: str) -> str | None:
         data = await callback()
         if isinstance(data, str):
             data = data.encode()
-        return await put_blob(data)
+        return await put_blob(data, url)
     except (asyncio.TimeoutError, PlaywrightTimeout):
         logger.warning("Timeout capturing %s for %s", name, url)
         return None

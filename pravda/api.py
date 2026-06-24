@@ -182,6 +182,7 @@ async def list_snapshots(
 
 
 def _snapshot_out(snapshot: Snapshot) -> SnapshotOut:
+    url = snapshot.url
     return SnapshotOut(
         id=snapshot.id,
         url=snapshot.url,
@@ -191,12 +192,16 @@ def _snapshot_out(snapshot: Snapshot) -> SnapshotOut:
         condition_type=snapshot.condition_type,
         condition=snapshot.condition,
         condition_met=snapshot.condition_met,
-        plaintext=content_path(snapshot.plaintext) if snapshot.plaintext else None,
+        plaintext=content_path(url, snapshot.plaintext) if snapshot.plaintext else None,
         rendered_html=(
-            content_path(snapshot.rendered_html) if snapshot.rendered_html else None
+            content_path(url, snapshot.rendered_html)
+            if snapshot.rendered_html
+            else None
         ),
-        screenshot=content_path(snapshot.screenshot) if snapshot.screenshot else None,
-        blob=content_path(snapshot.blob) if snapshot.blob else None,
+        screenshot=(
+            content_path(url, snapshot.screenshot) if snapshot.screenshot else None
+        ),
+        blob=content_path(url, snapshot.blob) if snapshot.blob else None,
         blob_content_type=snapshot.blob_content_type,
         headers=[
             HeaderOut(name=header.name, value=header.value)
