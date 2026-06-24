@@ -96,7 +96,11 @@ class SnapshotOut(BaseModel):
     """
 
     id: uuid.UUID
-    url: HttpUrl = Field(description="The URL that was captured")
+    url: HttpUrl = Field(description="The URL that was requested")
+    final_url: HttpUrl | None = Field(
+        default=None,
+        description="The URL the page ended up at after redirects, or null",
+    )
     captured_at: datetime = Field(description="When the snapshot was taken (UTC)")
     http_status: int | None = Field(
         default=None,
@@ -182,26 +186,31 @@ async def list_snapshots(
 
 
 def _snapshot_out(snapshot: Snapshot) -> SnapshotOut:
-    url = snapshot.url
+    prefix_url = snapshot.final_url or snapshot.url
     return SnapshotOut(
         id=snapshot.id,
         url=snapshot.url,
+        final_url=snapshot.final_url,
         captured_at=snapshot.captured_at,
         http_status=snapshot.http_status,
         error=snapshot.error,
         condition_type=snapshot.condition_type,
         condition=snapshot.condition,
         condition_met=snapshot.condition_met,
-        plaintext=content_path(url, snapshot.plaintext) if snapshot.plaintext else None,
+        plaintext=content_path(prefix_url, snapshot.plaintext)
+        if snapshot.plaintext
+        else None,
         rendered_html=(
-            content_path(url, snapshot.rendered_html)
+            content_path(prefix_url, snapshot.rendered_html)
             if snapshot.rendered_html
             else None
         ),
         screenshot=(
-            content_path(url, snapshot.screenshot) if snapshot.screenshot else None
+            content_path(prefix_url, snapshot.screenshot)
+            if snapshot.screenshot
+            else None
         ),
-        blob=content_path(url, snapshot.blob) if snapshot.blob else None,
+        blob=content_path(prefix_url, snapshot.blob) if snapshot.blob else None,
         blob_content_type=snapshot.blob_content_type,
         headers=[
             HeaderOut(name=header.name, value=header.value)
@@ -250,6 +259,7 @@ async def create_snapshot(
             error=error.message,
             condition_met=False,
             headers={},
+            final_url=None,
             plaintext_hash=None,
             rendered_html_hash=None,
             screenshot_hash=None,
@@ -282,6 +292,7 @@ def _build_snapshot(body: SnapshotCreate, result: CaptureResult) -> Snapshot:
     """Map captured evidence onto a persistable ``Snapshot`` row."""
     snapshot = Snapshot(
         url=str(body.url),
+        final_url=result.final_url,
         http_status=result.http_status,
         error=result.error,
         condition_type=body.condition_type,

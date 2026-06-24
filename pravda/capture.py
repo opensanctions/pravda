@@ -28,6 +28,7 @@ class CaptureResult:
     error: str | None
     condition_met: bool
     headers: dict[str, str]
+    final_url: str | None
     plaintext_hash: str | None
     rendered_html_hash: str | None
     screenshot_hash: str | None
@@ -56,13 +57,14 @@ async def capture_page(
         # Navigation never committed — there is nothing on the page to capture.
         artifacts = CapturedArtifacts(None, None, None, None, None)
     else:
-        artifacts = await _capture_artifacts(page, url)
+        artifacts = await _capture_artifacts(page, navigation.final_url)
 
     return CaptureResult(
         http_status=navigation.http_status,
         error=navigation.error,
         condition_met=navigation.condition_met,
         headers=navigation.headers,
+        final_url=navigation.final_url,
         plaintext_hash=artifacts.plaintext_hash,
         rendered_html_hash=artifacts.rendered_html_hash,
         screenshot_hash=artifacts.screenshot_hash,
@@ -77,6 +79,7 @@ class _Navigation:
     headers: dict[str, str]
     condition_met: bool
     error: str | None
+    final_url: str | None
 
 
 async def _navigate(
@@ -97,19 +100,28 @@ async def _navigate(
     """
     http_status: int | None = None
     headers: dict[str, str] = {}
+    final_url: str | None = None
     try:
         response = await page.goto(url, wait_until="commit", timeout=NAV_TIMEOUT_MS)
         http_status = response.status
         headers = {
             key.lower(): value for key, value in (await response.all_headers()).items()
         }
+        # page.url reflects any redirects that happened during navigation.
+        final_url = page.url
 
         if condition_type is ConditionType.selector:
             await page.wait_for_selector(condition, timeout=condition_timeout_ms)
         elif condition != "commit":
             await page.wait_for_load_state(condition, timeout=condition_timeout_ms)
 
-        return _Navigation(http_status, headers, condition_met=True, error=None)
+        return _Navigation(
+            http_status,
+            headers,
+            condition_met=True,
+            error=None,
+            final_url=final_url,
+        )
     except (PlaywrightTimeout, asyncio.TimeoutError) as exception:
         error = str(exception) or (
             f"Timeout {condition_timeout_ms}ms exceeded waiting for '{condition}'"
@@ -121,7 +133,9 @@ async def _navigate(
             condition,
             error,
         )
-        return _Navigation(http_status, headers, condition_met=False, error=error)
+        return _Navigation(
+            http_status, headers, condition_met=False, error=error, final_url=final_url
+        )
 
 
 @dataclass

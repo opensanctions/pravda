@@ -38,6 +38,7 @@ async def test_capture_page_returns_evidence(browser: Browser):
     assert result.http_status == 200
     assert result.condition_met is True
     assert result.error is None
+    assert result.final_url == "https://example.com/"
 
     # All four artifacts captured, each a sha256 hex hash
     assert len(result.plaintext_hash) == 64
@@ -69,6 +70,7 @@ async def test_capture_page_goto_timeout_skips_captures(browser: Browser):
     assert result.http_status is None  # unknown — goto never returned
     assert result.condition_met is False
     assert result.error is not None  # Playwright timeout message
+    assert result.final_url is None
 
     # Navigation never committed, so there is nothing to capture
     assert result.plaintext_hash is None
@@ -115,6 +117,7 @@ async def test_http_commit_captured_when_load_times_out(browser: Browser):
 
     # HTTP response was captured from the commit step
     assert result.http_status == 200
+    assert result.final_url == "https://slow.example.com/"
 
     # load timed out
     assert result.condition_met is False
@@ -143,6 +146,7 @@ async def test_captured_evidence_persists(db_session):
         error=None,
         condition_met=True,
         headers={"content-type": "text/html"},
+        final_url="https://example.com/",
         plaintext_hash=None,
         rendered_html_hash="a" * 64,
         screenshot_hash=None,
@@ -163,6 +167,7 @@ async def test_captured_evidence_persists(db_session):
     ).scalar_one()
 
     assert loaded.url == "https://example.com/"
+    assert loaded.final_url == "https://example.com/"
     assert loaded.http_status == 200
     assert loaded.condition_met is True
     assert loaded.rendered_html == "a" * 64

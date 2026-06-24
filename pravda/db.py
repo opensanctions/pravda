@@ -45,6 +45,7 @@ class Snapshot(Base):
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
     url: Mapped[str] = mapped_column(Text, nullable=False)
+    final_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     captured_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
