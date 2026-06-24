@@ -2,6 +2,7 @@ import hashlib
 import ipaddress
 import logging
 import os
+import re
 from urllib.parse import urlparse
 
 import fsspec
@@ -20,7 +21,8 @@ if not fs.async_impl:
 def normalize_hostname(url: str) -> str:
     """Normalize *url*'s hostname for use as a storage path prefix.
 
-    Lowercases, drops a leading ``www.``, excludes the port, and encodes
+    Lowercases, drops a leading ``www`` optionally followed by digits
+    (e.g. ``www.``, ``www2.``), excludes the port, and encodes
     internationalized domains as Punycode. IP addresses (v4/v6) are valid
     prefixes and are returned as-is.
     """
@@ -33,8 +35,7 @@ def normalize_hostname(url: str) -> str:
     except ValueError:
         pass
     host = host.lower()
-    if host.startswith("www."):
-        host = host[4:]
+    host = re.sub(r"^www\d*\.", "", host)
     return host.encode("idna").decode("ascii")
 
 

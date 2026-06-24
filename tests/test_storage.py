@@ -40,6 +40,25 @@ def test_normalize_hostname_lowercases_strips_www():
     assert normalize_hostname("https://WWW.Example.com:443/p?q=1") == "example.com"
 
 
+def test_normalize_hostname_strips_www_with_digits():
+    from pravda.storage import normalize_hostname
+
+    assert normalize_hostname("https://www2.example.com/") == "example.com"
+    assert normalize_hostname("https://www12.Example.com/") == "example.com"
+
+
+def test_normalize_hostname_drops_port():
+    from pravda.storage import normalize_hostname
+
+    assert normalize_hostname("https://example.com:8080/") == "example.com"
+
+
+def test_normalize_hostname_ipv6_passthrough():
+    from pravda.storage import normalize_hostname
+
+    assert normalize_hostname("http://[2001:db8::1]:8080/") == "2001:db8::1"
+
+
 def test_normalize_hostname_idn_punycode():
     from pravda.storage import normalize_hostname
 
