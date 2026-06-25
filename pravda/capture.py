@@ -29,11 +29,10 @@ class CaptureResult:
     condition_met: bool
     headers: dict[str, str]
     final_url: str | None
-    plaintext_hash: str | None
-    rendered_html_hash: str | None
-    screenshot_hash: str | None
-    blob_hash: str | None
-    blob_content_type: str | None
+    plaintext: str | None
+    rendered_html: str | None
+    screenshot: str | None
+    blob: str | None
 
 
 async def capture_page(
@@ -55,7 +54,7 @@ async def capture_page(
 
     if navigation.http_status is None:
         # Navigation never committed — there is nothing on the page to capture.
-        artifacts = CapturedArtifacts(None, None, None, None, None)
+        artifacts = CapturedArtifacts(None, None, None, None)
     else:
         artifacts = await _capture_artifacts(page, navigation.final_url)
 
@@ -65,11 +64,10 @@ async def capture_page(
         condition_met=navigation.condition_met,
         headers=navigation.headers,
         final_url=navigation.final_url,
-        plaintext_hash=artifacts.plaintext_hash,
-        rendered_html_hash=artifacts.rendered_html_hash,
-        screenshot_hash=artifacts.screenshot_hash,
-        blob_hash=artifacts.blob_hash,
-        blob_content_type=artifacts.blob_content_type,
+        plaintext=artifacts.plaintext,
+        rendered_html=artifacts.rendered_html,
+        screenshot=artifacts.screenshot,
+        blob=artifacts.blob,
     )
 
 
@@ -140,18 +138,16 @@ async def _navigate(
 
 @dataclass
 class CapturedArtifacts:
-    """Hashes of the four captured artifacts, plus the blob's MIME type.
+    """Filenames of the four captured artifacts.
 
-    Three are fixed-MIME (plaintext/rendered_html/screenshot); the blob is
-    polymorphic (multipart/related today, application/pdf and others later),
-    so its content type is recorded alongside.
+    Each is a content address ``<sha256>.<extension>``; the extension
+    (txt/html/png/mhtml) carries the artifact's type.
     """
 
-    plaintext_hash: str | None
-    rendered_html_hash: str | None
-    screenshot_hash: str | None
-    blob_hash: str | None
-    blob_content_type: str | None
+    plaintext: str | None
+    rendered_html: str | None
+    screenshot: str | None
+    blob: str | None
 
 
 async def _capture_artifacts(page: Page, url: str) -> CapturedArtifacts:
@@ -171,15 +167,17 @@ async def _capture_artifacts(page: Page, url: str) -> CapturedArtifacts:
         )
         return result["data"]
 
-    plaintext_hash = await _capture_one(
+    plaintext = await _capture_one(
         "plaintext",
         lambda: page.inner_text("body", timeout=CAPTURE_TIMEOUT_MS),
         url,
+        "txt",
     )
-    rendered_html_hash = await _capture_one(
+    rendered_html = await _capture_one(
         "rendered_html",
         lambda: page.content(),
         url,
+        "html",
     )
     # Use clip to constrain the screenshot width to the viewport width.
     # CSS approaches (max-width on html/body, overflow-x: hidden, etc.) don't
@@ -192,7 +190,7 @@ async def _capture_artifacts(page: Page, url: str) -> CapturedArtifacts:
         if viewport_size
         else None
     )
-    screenshot_hash = await _capture_one(
+    screenshot = await _capture_one(
         "screenshot",
         lambda: page.screenshot(
             full_page=True,
@@ -200,25 +198,25 @@ async def _capture_artifacts(page: Page, url: str) -> CapturedArtifacts:
             timeout=CAPTURE_TIMEOUT_MS,
         ),
         url,
+        "png",
     )
-    blob_hash = await _capture_one("blob", capture_mhtml, url)
+    blob = await _capture_one("blob", capture_mhtml, url, "mhtml")
 
     return CapturedArtifacts(
-        plaintext_hash=plaintext_hash,
-        rendered_html_hash=rendered_html_hash,
-        screenshot_hash=screenshot_hash,
-        blob_hash=blob_hash,
-        blob_content_type="multipart/related" if blob_hash is not None else None,
+        plaintext=plaintext,
+        rendered_html=rendered_html,
+        screenshot=screenshot,
+        blob=blob,
     )
 
 
-async def _capture_one(name: str, callback, url: str) -> str | None:
+async def _capture_one(name: str, callback, url: str, extension: str) -> str | None:
     """Capture one artifact via *callback* and store the blob."""
     try:
         data = await callback()
         if isinstance(data, str):
             data = data.encode()
-        return await put_blob(data, url)
+        return await put_blob(data, url, extension)
     except (asyncio.TimeoutError, PlaywrightTimeout):
         logger.warning("Timeout capturing %s for %s", name, url)
         return None

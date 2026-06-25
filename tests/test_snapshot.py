@@ -40,12 +40,11 @@ async def test_capture_page_returns_evidence(browser: Browser):
     assert result.error is None
     assert result.final_url == "https://example.com/"
 
-    # All four artifacts captured, each a sha256 hex hash
-    assert len(result.plaintext_hash) == 64
-    assert len(result.rendered_html_hash) == 64
-    assert len(result.screenshot_hash) == 64
-    assert len(result.blob_hash) == 64
-    assert result.blob_content_type == "multipart/related"
+    # All four artifacts captured, each a <sha256>.<ext> filename
+    assert result.plaintext.endswith(".txt")
+    assert result.rendered_html.endswith(".html")
+    assert result.screenshot.endswith(".png")
+    assert result.blob.endswith(".mhtml")
 
     assert "content-type" in result.headers
 
@@ -73,11 +72,10 @@ async def test_capture_page_goto_timeout_skips_captures(browser: Browser):
     assert result.final_url is None
 
     # Navigation never committed, so there is nothing to capture
-    assert result.plaintext_hash is None
-    assert result.rendered_html_hash is None
-    assert result.screenshot_hash is None
-    assert result.blob_hash is None
-    assert result.blob_content_type is None
+    assert result.plaintext is None
+    assert result.rendered_html is None
+    assert result.screenshot is None
+    assert result.blob is None
 
 
 @pytest.mark.asyncio
@@ -126,11 +124,10 @@ async def test_http_commit_captured_when_load_times_out(browser: Browser):
     # Navigation committed, so every capture ran. The screenshot went
     # through despite load timing out: pending requests are stopped first so
     # the page settles into a capturable state.
-    assert result.plaintext_hash is not None
-    assert result.rendered_html_hash is not None
-    assert result.screenshot_hash is not None
-    assert result.blob_hash is not None
-    assert result.blob_content_type == "multipart/related"
+    assert result.plaintext is not None
+    assert result.rendered_html is not None
+    assert result.screenshot is not None
+    assert result.blob is not None
 
     # Headers were captured
     assert "content-type" in result.headers
@@ -147,11 +144,10 @@ async def test_captured_evidence_persists(db_session):
         condition_met=True,
         headers={"content-type": "text/html"},
         final_url="https://example.com/",
-        plaintext_hash=None,
-        rendered_html_hash="a" * 64,
-        screenshot_hash=None,
-        blob_hash=None,
-        blob_content_type=None,
+        plaintext=None,
+        rendered_html="a" * 64 + ".html",
+        screenshot=None,
+        blob=None,
     )
 
     snapshot = _build_snapshot(body, result)
@@ -170,11 +166,10 @@ async def test_captured_evidence_persists(db_session):
     assert loaded.final_url == "https://example.com/"
     assert loaded.http_status == 200
     assert loaded.condition_met is True
-    assert loaded.rendered_html == "a" * 64
+    assert loaded.rendered_html == "a" * 64 + ".html"
     assert loaded.plaintext is None
     assert loaded.screenshot is None
     assert loaded.blob is None
-    assert loaded.blob_content_type is None
     assert [(h.name, h.value) for h in loaded.headers] == [
         ("content-type", "text/html")
     ]

@@ -88,11 +88,12 @@ class SnapshotOut(BaseModel):
     """A captured snapshot of a web page.
 
     `plaintext`, `rendered_html`, `screenshot`, and `blob` are content-addressed
-    storage locations (a SHA-256 hex digest as the filename) under the shared
-    storage backend. Downstream services with access to that backend read the
-    files directly from the returned location — there is no blob download
-    endpoint. Each is null when that artifact was not captured (e.g. the
-    page never committed, or the capture timed out).
+    storage locations (a filename of the form ``<sha256>.<extension>``) under
+    the shared storage backend. Downstream services with access to that backend
+    read the files directly from the returned location — there is no blob
+    download endpoint. Each is null when that artifact was not captured (e.g.
+    the page never committed, or the capture timed out). The file extension
+    carries the artifact's type (txt, html, png, mhtml).
     """
 
     id: uuid.UUID
@@ -118,33 +119,29 @@ class SnapshotOut(BaseModel):
     plaintext: str | None = Field(
         default=None,
         description=(
-            "Content-addressed storage location of the page text (text/plain), or null"
+            "Content-addressed storage location of the page text (``.txt``), or null"
         ),
     )
     rendered_html: str | None = Field(
         default=None,
         description=(
             "Content-addressed storage location of the rendered HTML "
-            "(text/html), or null"
+            "(``.html``), or null"
         ),
     )
     screenshot: str | None = Field(
         default=None,
         description=(
             "Content-addressed storage location of the full-page screenshot "
-            "(image/png), or null"
+            "(``.png``), or null"
         ),
     )
     blob: str | None = Field(
         default=None,
         description=(
-            "Content-addressed storage location of the archive blob, or null. "
-            "Its MIME type is in `blob_content_type`."
+            "Content-addressed storage location of the archive blob "
+            "(``.mhtml`` today), or null"
         ),
-    )
-    blob_content_type: str | None = Field(
-        default=None,
-        description="MIME type of the blob, or null when no blob was captured",
     )
     headers: list[HeaderOut] = Field(description="Response headers from the page")
 
@@ -211,7 +208,6 @@ def _snapshot_out(snapshot: Snapshot) -> SnapshotOut:
             else None
         ),
         blob=content_path(prefix_url, snapshot.blob) if snapshot.blob else None,
-        blob_content_type=snapshot.blob_content_type,
         headers=[
             HeaderOut(name=header.name, value=header.value)
             for header in snapshot.headers
@@ -260,11 +256,10 @@ async def create_snapshot(
             condition_met=False,
             headers={},
             final_url=None,
-            plaintext_hash=None,
-            rendered_html_hash=None,
-            screenshot_hash=None,
-            blob_hash=None,
-            blob_content_type=None,
+            plaintext=None,
+            rendered_html=None,
+            screenshot=None,
+            blob=None,
         )
 
     snapshot = _build_snapshot(body, result)
@@ -298,11 +293,10 @@ def _build_snapshot(body: SnapshotCreate, result: CaptureResult) -> Snapshot:
         condition_type=body.condition_type,
         condition=body.condition,
         condition_met=result.condition_met,
-        plaintext=result.plaintext_hash,
-        rendered_html=result.rendered_html_hash,
-        screenshot=result.screenshot_hash,
-        blob=result.blob_hash,
-        blob_content_type=result.blob_content_type,
+        plaintext=result.plaintext,
+        rendered_html=result.rendered_html,
+        screenshot=result.screenshot,
+        blob=result.blob,
     )
     snapshot.headers = [
         Header(name=name, value=value) for name, value in result.headers.items()

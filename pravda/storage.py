@@ -39,22 +39,27 @@ def normalize_hostname(url: str) -> str:
     return host.encode("idna").decode("ascii")
 
 
-def content_path(url: str, hash_hex: str) -> str:
-    return os.path.join(_base_path, normalize_hostname(url), hash_hex)
+def content_path(url: str, name: str) -> str:
+    return os.path.join(_base_path, normalize_hostname(url), name)
 
 
-async def put_blob(data: bytes, url: str) -> str:
-    """Store *data* under the hostname prefix of *url* and return its hash."""
+async def put_blob(data: bytes, url: str, extension: str) -> str:
+    """Store *data* under the hostname prefix of *url*.
+
+    The file is named ``<sha256>.<extension>``; the extension carries the
+    artifact's type (txt, html, png, mhtml, ...). Returns that filename.
+    """
     hash_hex = hashlib.sha256(data).hexdigest()
+    name = f"{hash_hex}.{extension}"
     host_dir = os.path.join(_base_path, normalize_hostname(url))
-    path = os.path.join(host_dir, hash_hex)
+    path = os.path.join(host_dir, name)
 
     if await fs._exists(path):
-        logger.debug("Blob already exists: %s", hash_hex)
-        return hash_hex
+        logger.debug("Blob already exists: %s", name)
+        return name
 
     await fs._makedirs(host_dir, exist_ok=True)
     await fs._pipe_file(path, data)
 
-    logger.debug("Stored blob: %s (%d bytes)", hash_hex, len(data))
-    return hash_hex
+    logger.debug("Stored blob: %s (%d bytes)", name, len(data))
+    return name

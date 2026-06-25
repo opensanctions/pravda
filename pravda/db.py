@@ -6,7 +6,6 @@ from datetime import datetime
 
 from sqlalchemy import (
     Boolean,
-    CheckConstraint,
     DateTime,
     Enum,
     ForeignKey,
@@ -33,13 +32,6 @@ class Base(DeclarativeBase):
 
 class Snapshot(Base):
     __tablename__ = "snapshot"
-    __table_args__ = (
-        CheckConstraint(
-            "(blob IS NULL AND blob_content_type IS NULL) "
-            "OR (blob IS NOT NULL AND blob_content_type IS NOT NULL)",
-            name="blob_content_type_present_iff_blob",
-        ),
-    )
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
@@ -57,14 +49,13 @@ class Snapshot(Base):
     condition: Mapped[str] = mapped_column(Text, nullable=False)
     condition_met: Mapped[bool] = mapped_column(Boolean, nullable=False)
 
-    # Captured evidence. Three are fixed-MIME (their type is implicit); the
-    # blob is polymorphic (multipart/related today, application/pdf and others
-    # later), so its content type is recorded alongside its hash.
+    # Captured evidence. Each is a content-addressed filename
+    # (``<sha256>.<extension>``) under the shared storage backend; the
+    # extension carries the artifact's type, so no separate MIME column.
     plaintext: Mapped[str | None] = mapped_column(Text, nullable=True)
     rendered_html: Mapped[str | None] = mapped_column(Text, nullable=True)
     screenshot: Mapped[str | None] = mapped_column(Text, nullable=True)
     blob: Mapped[str | None] = mapped_column(Text, nullable=True)
-    blob_content_type: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     headers: Mapped[list["Header"]] = relationship(back_populates="snapshot")
 

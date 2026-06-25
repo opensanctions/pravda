@@ -7,16 +7,15 @@ from pravda.storage import content_path, put_blob
 
 
 @pytest.mark.asyncio
-async def test_put_blob_stores_at_hash_path():
+async def test_put_blob_stores_at_content_address():
     data = b"hello pravda"
     expected_hash = hashlib.sha256(data).hexdigest()
 
-    hash_hex = await put_blob(data, "https://www.example.com/path")
-    assert len(hash_hex) == 64
-    assert hash_hex == expected_hash
+    name = await put_blob(data, "https://www.example.com/path", "txt")
+    assert name == f"{expected_hash}.txt"
 
     # Verify the file was written under the normalized hostname prefix
-    path = Path(content_path("https://www.example.com", hash_hex))
+    path = Path(content_path("https://www.example.com", name))
     assert path.read_bytes() == data
 
 
@@ -24,9 +23,9 @@ async def test_put_blob_stores_at_hash_path():
 async def test_put_blob_deduplicates():
     data = b"same content twice"
 
-    hash1 = await put_blob(data, "https://example.com")
-    hash2 = await put_blob(data, "https://example.com")
-    assert hash1 == hash2
+    name1 = await put_blob(data, "https://example.com", "mhtml")
+    name2 = await put_blob(data, "https://example.com", "mhtml")
+    assert name1 == name2
 
 
 def test_content_path_builds_full_path():
