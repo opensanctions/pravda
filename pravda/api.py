@@ -20,7 +20,7 @@ from sqlalchemy.orm import selectinload
 
 from pravda.capture import CaptureResult, capture_page
 from pravda.db import ConditionType, ResponseBody, Snapshot, get_session, init_db
-from pravda.har import capture_har
+from pravda.http_archive import capture_http_archive
 from pravda.storage import content_path
 
 BROWSER_CHANNEL = "chrome"
@@ -92,11 +92,11 @@ class SnapshotOut(BaseModel):
     read the files directly from the returned location — there is no blob
     download endpoint. Each is null when that artifact was not captured (e.g.
     the page never committed, or the capture timed out). The file extension
-    carries the artifact's type (txt, html, png). `har` is the
+    carries the artifact's type (txt, html, png). `http_archive` is the
     content-addressed storage location of the recorded HAR (``.har``) —
     metadata only, with each entry's ``content._file`` pointing at a body
     stored under its own content-addressed location. `response_bodies` lists those
-    body locations. `har` is null when navigation never committed.
+    body locations. `http_archive` is null when navigation never committed.
     """
 
     id: uuid.UUID
@@ -139,7 +139,7 @@ class SnapshotOut(BaseModel):
             "(``.png``), or null"
         ),
     )
-    har: str | None = Field(
+    http_archive: str | None = Field(
         default=None,
         description=(
             "Content-addressed storage location of the recorded HAR "
@@ -215,7 +215,9 @@ def _snapshot_out(snapshot: Snapshot) -> SnapshotOut:
             if snapshot.screenshot
             else None
         ),
-        har=content_path(prefix_url, snapshot.har) if snapshot.har else None,
+        http_archive=content_path(prefix_url, snapshot.http_archive)
+        if snapshot.http_archive
+        else None,
         response_bodies={
             body.file: content_path(prefix_url, body.file)
             for body in snapshot.response_bodies
@@ -234,7 +236,7 @@ async def create_snapshot(
         body.condition_type.value,
         body.condition,
     )
-    har_dir = Path(tempfile.mkdtemp())
+    http_archive_dir = Path(tempfile.mkdtemp())
     try:
         async with async_playwright() as playwright:
             browser = await playwright.chromium.connect(
@@ -249,9 +251,9 @@ async def create_snapshot(
             # stored as separate entries inside a zip archive
             # (record_har_content="attach" + a .zip path). The file is flushed
             # when the context closes.
-            har_path = har_dir / "record.zip"
+            http_archive_path = http_archive_dir / "record.zip"
             context = await browser.new_context(
-                record_har_path=str(har_path),
+                record_har_path=str(http_archive_path),
                 record_har_content="attach",
             )
             page = await context.new_page()
@@ -267,9 +269,11 @@ async def create_snapshot(
 
             # The HAR is written when the context closes. Unpack it only when
             # navigation committed — otherwise it holds no useful evidence.
-            har_capture = None
-            if result.http_status is not None and har_path.exists():
-                har_capture = await capture_har(har_path, str(body.url))
+            http_archive_capture = None
+            if result.http_status is not None and http_archive_path.exists():
+                http_archive_capture = await capture_http_archive(
+                    http_archive_path, str(body.url)
+                )
     except PlaywrightError as error:
         # Couldn't even reach the browser — record an empty, failed result.
         logger.error("Browser error for %s: %s", body.url, error.message)
@@ -282,21 +286,21 @@ async def create_snapshot(
             rendered_html=None,
             screenshot=None,
         )
-        har_capture = None
+        http_archive_capture = None
     finally:
-        shutil.rmtree(har_dir, ignore_errors=True)
+        shutil.rmtree(http_archive_dir, ignore_errors=True)
 
-    snapshot = _build_snapshot(body, result, har_capture)
+    snapshot = _build_snapshot(body, result, http_archive_capture)
     session.add(snapshot)
     await session.commit()
     logger.info(
         "Captured %s id=%s: status=%s condition_met=%s"
-        " har=%s response_bodies=%d error=%s",
+        " http_archive=%s response_bodies=%d error=%s",
         snapshot.url,
         snapshot.id,
         snapshot.http_status,
         snapshot.condition_met,
-        snapshot.har is not None,
+        snapshot.http_archive is not None,
         len(snapshot.response_bodies),
         snapshot.error,
     )
@@ -306,7 +310,7 @@ async def create_snapshot(
 def _build_snapshot(
     body: SnapshotCreate,
     result: CaptureResult,
-    har_capture,
+    http_archive_capture,
 ) -> Snapshot:
     """Map captured evidence onto a persistable ``Snapshot`` row."""
     snapshot = Snapshot(
@@ -320,10 +324,12 @@ def _build_snapshot(
         plaintext=result.plaintext,
         rendered_html=result.rendered_html,
         screenshot=result.screenshot,
-        har=har_capture.har if har_capture else None,
+        http_archive=http_archive_capture.http_archive
+        if http_archive_capture
+        else None,
     )
-    if har_capture:
+    if http_archive_capture:
         snapshot.response_bodies = [
-            ResponseBody(file=file) for file in har_capture.response_bodies
+            ResponseBody(file=file) for file in http_archive_capture.response_bodies
         ]
     return snapshot

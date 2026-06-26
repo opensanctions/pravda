@@ -160,5 +160,5 @@ async def test_captured_evidence_persists(db_session):
     assert loaded.rendered_html == "a" * 40 + ".html"
     assert loaded.plaintext is None
     assert loaded.screenshot is None
-    assert loaded.har is None
+    assert loaded.http_archive is None
     assert list(loaded.response_bodies) == []

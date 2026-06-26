@@ -57,7 +57,7 @@ class Snapshot(Base):
     screenshot: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Content-addressed filename of the recorded HAR (metadata only; each
     # entry's ``content._file`` points at a body stored in its own blob).
-    har: Mapped[str | None] = mapped_column(Text, nullable=True)
+    http_archive: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     response_bodies: Mapped[list["ResponseBody"]] = relationship(
         back_populates="snapshot"

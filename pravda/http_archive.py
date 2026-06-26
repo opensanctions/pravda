@@ -21,19 +21,19 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
-class HarCapture:
+class HttpArchiveCapture:
     """Result of unpacking a HAR recording.
 
-    ``har`` is the content-addressed filename of the metadata-only HAR. Its
-    ``content._file`` fields point at the stored bodies. ``response_bodies``
-    lists those body filenames.
+    ``http_archive`` is the content-addressed filename of the metadata-only
+    HAR. Its ``content._file`` fields point at the stored bodies.
+    ``response_bodies`` lists those body filenames.
     """
 
-    har: str
+    http_archive: str
     response_bodies: list[str]
 
 
-async def capture_har(zip_path: Path, url: str) -> HarCapture | None:
+async def capture_http_archive(zip_path: Path, url: str) -> HttpArchiveCapture | None:
     """Unzip the Playwright HAR at *zip_path*, store bodies and the HAR itself.
 
     *url* is the page URL; bodies and the HAR are stored under its hostname
@@ -58,8 +58,10 @@ async def capture_har(zip_path: Path, url: str) -> HarCapture | None:
             await put_blob(file_name, body, url)
             response_bodies.append(file_name)
 
-        har_bytes = json.dumps(manifest).encode()
-        har_name = f"{content_hash(har_bytes)}.har"
-        await put_blob(har_name, har_bytes, url)
+        http_archive_bytes = json.dumps(manifest).encode()
+        http_archive_name = f"{content_hash(http_archive_bytes)}.har"
+        await put_blob(http_archive_name, http_archive_bytes, url)
 
-    return HarCapture(har=har_name, response_bodies=response_bodies)
+    return HttpArchiveCapture(
+        http_archive=http_archive_name, response_bodies=response_bodies
+    )
