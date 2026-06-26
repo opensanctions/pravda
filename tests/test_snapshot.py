@@ -149,7 +149,7 @@ async def test_captured_evidence_persists(db_session):
         await db_session.execute(
             select(Snapshot)
             .where(Snapshot.id == snapshot.id)
-            .options(selectinload(Snapshot.contents))
+            .options(selectinload(Snapshot.response_bodies))
         )
     ).scalar_one()
 
@@ -161,4 +161,4 @@ async def test_captured_evidence_persists(db_session):
     assert loaded.plaintext is None
     assert loaded.screenshot is None
     assert loaded.har is None
-    assert list(loaded.contents) == []
+    assert list(loaded.response_bodies) == []

@@ -25,12 +25,12 @@ class HarCapture:
     """Result of unpacking a HAR recording.
 
     ``har`` is the content-addressed filename of the metadata-only HAR. Its
-    ``content._file`` fields point at the stored bodies. ``contents`` lists
-    those body filenames.
+    ``content._file`` fields point at the stored bodies. ``response_bodies``
+    lists those body filenames.
     """
 
     har: str
-    contents: list[str]
+    response_bodies: list[str]
 
 
 async def capture_har(zip_path: Path, url: str) -> HarCapture | None:
@@ -46,7 +46,7 @@ async def capture_har(zip_path: Path, url: str) -> HarCapture | None:
             return None
         manifest = json.loads(archive.read("har.har"))
 
-        contents: list[str] = []
+        response_bodies: list[str] = []
         for entry in manifest["log"]["entries"]:
             content = entry.get("response", {}).get("content", {})
             file_name = content.get("_file")
@@ -56,10 +56,10 @@ async def capture_har(zip_path: Path, url: str) -> HarCapture | None:
             # that exact name so the manifest already points at our CAS.
             body = archive.read(file_name)
             await put_blob(file_name, body, url)
-            contents.append(file_name)
+            response_bodies.append(file_name)
 
         har_bytes = json.dumps(manifest).encode()
         har_name = f"{content_hash(har_bytes)}.har"
         await put_blob(har_name, har_bytes, url)
 
-    return HarCapture(har=har_name, contents=contents)
+    return HarCapture(har=har_name, response_bodies=response_bodies)

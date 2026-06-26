@@ -59,10 +59,12 @@ class Snapshot(Base):
     # entry's ``content._file`` points at a body stored in its own blob).
     har: Mapped[str | None] = mapped_column(Text, nullable=True)
 
-    contents: Mapped[list["Content"]] = relationship(back_populates="snapshot")
+    response_bodies: Mapped[list["ResponseBody"]] = relationship(
+        back_populates="snapshot"
+    )
 
 
-class Content(Base):
+class ResponseBody(Base):
     """One response body extracted from the page's HAR recording.
 
     ``file`` is a content-addressed filename (``<sha1>.<extension>``) under
@@ -70,7 +72,7 @@ class Content(Base):
     the snapshot's HAR, which references this file via ``content._file``.
     """
 
-    __tablename__ = "content"
+    __tablename__ = "response_body"
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
@@ -80,7 +82,7 @@ class Content(Base):
     )
     file: Mapped[str] = mapped_column(Text, nullable=False)
 
-    snapshot: Mapped["Snapshot"] = relationship(back_populates="contents")
+    snapshot: Mapped["Snapshot"] = relationship(back_populates="response_bodies")
 
 
 async def init_db() -> None:

@@ -19,7 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from pravda.capture import CaptureResult, capture_page
-from pravda.db import ConditionType, Content, Snapshot, get_session, init_db
+from pravda.db import ConditionType, ResponseBody, Snapshot, get_session, init_db
 from pravda.har import capture_har
 from pravda.storage import content_path
 
@@ -83,17 +83,6 @@ class SnapshotCreate(BaseModel):
         return self
 
 
-class ContentOut(BaseModel):
-    """One response body extracted from the page's HAR recording."""
-
-    file: str = Field(
-        description=(
-            "Content-addressed storage location of the response body "
-            "(``<sha1>.<extension>``)"
-        )
-    )
-
-
 class SnapshotOut(BaseModel):
     """A captured snapshot of a web page.
 
@@ -106,7 +95,7 @@ class SnapshotOut(BaseModel):
     carries the artifact's type (txt, html, png). `har` is the
     content-addressed storage location of the recorded HAR (``.har``) —
     metadata only, with each entry's ``content._file`` pointing at a body
-    stored under its own content-addressed location. `contents` lists those
+    stored under its own content-addressed location. `response_bodies` lists those
     body locations. `har` is null when navigation never committed.
     """
 
@@ -157,8 +146,11 @@ class SnapshotOut(BaseModel):
             "(``.har``; metadata only), or null"
         ),
     )
-    contents: list[ContentOut] = Field(
-        description="Response bodies recorded in the page's HAR"
+    response_bodies: dict[str, str] = Field(
+        description=(
+            "Response bodies recorded in the page's HAR, keyed by their "
+            "content-addressed filename and mapping to their storage path"
+        )
     )
 
 
@@ -188,7 +180,7 @@ async def list_snapshots(
         .order_by(Snapshot.captured_at.desc())
         .offset((page - 1) * PAGE_SIZE)
         .limit(PAGE_SIZE)
-        .options(selectinload(Snapshot.contents))
+        .options(selectinload(Snapshot.response_bodies))
     )
     rows = (await session.execute(rows_stmt)).scalars().all()
 
@@ -224,10 +216,10 @@ def _snapshot_out(snapshot: Snapshot) -> SnapshotOut:
             else None
         ),
         har=content_path(prefix_url, snapshot.har) if snapshot.har else None,
-        contents=[
-            ContentOut(file=content_path(prefix_url, content.file))
-            for content in snapshot.contents
-        ],
+        response_bodies={
+            body.file: content_path(prefix_url, body.file)
+            for body in snapshot.response_bodies
+        },
     )
 
 
@@ -298,13 +290,14 @@ async def create_snapshot(
     session.add(snapshot)
     await session.commit()
     logger.info(
-        "Captured %s id=%s: status=%s condition_met=%s har=%s contents=%d error=%s",
+        "Captured %s id=%s: status=%s condition_met=%s"
+        " har=%s response_bodies=%d error=%s",
         snapshot.url,
         snapshot.id,
         snapshot.http_status,
         snapshot.condition_met,
         snapshot.har is not None,
-        len(snapshot.contents),
+        len(snapshot.response_bodies),
         snapshot.error,
     )
     return _snapshot_out(snapshot)
@@ -330,5 +323,7 @@ def _build_snapshot(
         har=har_capture.har if har_capture else None,
     )
     if har_capture:
-        snapshot.contents = [Content(file=file) for file in har_capture.contents]
+        snapshot.response_bodies = [
+            ResponseBody(file=file) for file in har_capture.response_bodies
+        ]
     return snapshot
