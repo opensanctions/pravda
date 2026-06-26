@@ -16,12 +16,11 @@ from playwright.async_api import async_playwright
 from pydantic import BaseModel, Field, HttpUrl, model_validator
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
 
 from pravda.capture import CaptureResult, capture_page
-from pravda.db import ConditionType, ResponseBody, Snapshot, get_session, init_db
+from pravda.db import ConditionType, Snapshot, get_session, init_db
 from pravda.http_archive import capture_http_archive
-from pravda.storage import content_path
+from pravda.storage import content_prefix
 
 BROWSER_CHANNEL = "chrome"
 BROWSER_WS_URL = os.environ["BROWSER_WS_URL"]
@@ -86,17 +85,21 @@ class SnapshotCreate(BaseModel):
 class SnapshotOut(BaseModel):
     """A captured snapshot of a web page.
 
-    `plaintext`, `rendered_html`, and `screenshot` are content-addressed
-    storage locations (a filename of the form ``<sha1>.<extension>``) under
-    the shared storage backend. Downstream services with access to that backend
-    read the files directly from the returned location — there is no blob
-    download endpoint. Each is null when that artifact was not captured (e.g.
-    the page never committed, or the capture timed out). The file extension
-    carries the artifact's type (txt, html, png). `http_archive` is the
-    content-addressed storage location of the recorded HAR (``.har``) —
-    metadata only, with each entry's ``content._file`` pointing at a body
-    stored under its own content-addressed location. `response_bodies` lists those
-    body locations. `http_archive` is null when navigation never committed.
+    `prefix` is the full path to the directory under the shared storage
+    backend where this snapshot's artifacts live (base path + normalized
+    hostname of `final_url`). Each location below is a bare content-addressed filename
+    (``<sha1>.<extension>``); downstream services resolve each as
+    ``<prefix>/<filename>`` directly against their access to the same
+    backend — there is no blob download endpoint. The HAR's
+    ``content._file`` entries name bodies the same way, so they resolve
+    identically. `prefix` is null when navigation never committed and no
+    artifacts were stored.
+
+    `plaintext`, `rendered_html`, and `screenshot` are each null when that
+    artifact was not captured (e.g. the page never committed, or the capture
+    timed out). The file extension carries the artifact's type (txt, html,
+    png). `http_archive` is the filename of the recorded HAR (``.har``) —
+    metadata only. `http_archive` is null when navigation never committed.
     """
 
     id: uuid.UUID
@@ -119,38 +122,37 @@ class SnapshotOut(BaseModel):
     condition_met: bool = Field(
         description="Whether the page condition was satisfied before capture",
     )
-    plaintext: str | None = Field(
+    prefix: str | None = Field(
         default=None,
         description=(
-            "Content-addressed storage location of the page text (``.txt``), or null"
+            "Full path (storage backend base + normalized hostname of "
+            "final_url) under which this snapshot's artifacts live; resolve "
+            "each filename below as ``<prefix>/<filename>``. Null when "
+            "navigation never committed and no artifacts were stored."
         ),
+    )
+    plaintext: str | None = Field(
+        default=None,
+        description="Content-addressed filename of the page text (``.txt``), or null",
     )
     rendered_html: str | None = Field(
         default=None,
         description=(
-            "Content-addressed storage location of the rendered HTML "
-            "(``.html``), or null"
+            "Content-addressed filename of the rendered HTML (``.html``), or null"
         ),
     )
     screenshot: str | None = Field(
         default=None,
         description=(
-            "Content-addressed storage location of the full-page screenshot "
-            "(``.png``), or null"
+            "Content-addressed filename of the full-page screenshot (``.png``), or null"
         ),
     )
     http_archive: str | None = Field(
         default=None,
         description=(
-            "Content-addressed storage location of the recorded HAR "
-            "(``.har``; metadata only), or null"
+            "Content-addressed filename of the recorded HAR (``.har``; "
+            "metadata only), or null"
         ),
-    )
-    response_bodies: dict[str, str] = Field(
-        description=(
-            "Response bodies recorded in the page's HAR, keyed by their "
-            "content-addressed filename and mapping to their storage path"
-        )
     )
 
 
@@ -180,7 +182,6 @@ async def list_snapshots(
         .order_by(Snapshot.captured_at.desc())
         .offset((page - 1) * PAGE_SIZE)
         .limit(PAGE_SIZE)
-        .options(selectinload(Snapshot.response_bodies))
     )
     rows = (await session.execute(rows_stmt)).scalars().all()
 
@@ -191,7 +192,6 @@ async def list_snapshots(
 
 
 def _snapshot_out(snapshot: Snapshot) -> SnapshotOut:
-    prefix_url = snapshot.final_url or snapshot.url
     return SnapshotOut(
         id=snapshot.id,
         url=snapshot.url,
@@ -202,26 +202,11 @@ def _snapshot_out(snapshot: Snapshot) -> SnapshotOut:
         condition_type=snapshot.condition_type,
         condition=snapshot.condition,
         condition_met=snapshot.condition_met,
-        plaintext=content_path(prefix_url, snapshot.plaintext)
-        if snapshot.plaintext
-        else None,
-        rendered_html=(
-            content_path(prefix_url, snapshot.rendered_html)
-            if snapshot.rendered_html
-            else None
-        ),
-        screenshot=(
-            content_path(prefix_url, snapshot.screenshot)
-            if snapshot.screenshot
-            else None
-        ),
-        http_archive=content_path(prefix_url, snapshot.http_archive)
-        if snapshot.http_archive
-        else None,
-        response_bodies={
-            body.file: content_path(prefix_url, body.file)
-            for body in snapshot.response_bodies
-        },
+        prefix=content_prefix(snapshot.final_url) if snapshot.final_url else None,
+        plaintext=snapshot.plaintext,
+        rendered_html=snapshot.rendered_html,
+        screenshot=snapshot.screenshot,
+        http_archive=snapshot.http_archive,
     )
 
 
@@ -269,11 +254,15 @@ async def create_snapshot(
 
             # The HAR is written when the context closes. Unpack it only when
             # navigation committed — otherwise it holds no useful evidence.
-            http_archive_capture = None
+            # Navigation committed, so final_url is set; store the HAR under
+            # it so every artifact shares the one prefix exposed in the
+            # API response.
+            http_archive = None
             if result.http_status is not None and http_archive_path.exists():
-                http_archive_capture = await capture_http_archive(
-                    http_archive_path, str(body.url)
+                capture = await capture_http_archive(
+                    http_archive_path, result.final_url
                 )
+                http_archive = capture.http_archive if capture else None
     except PlaywrightError as error:
         # Couldn't even reach the browser — record an empty, failed result.
         logger.error("Browser error for %s: %s", body.url, error.message)
@@ -286,22 +275,20 @@ async def create_snapshot(
             rendered_html=None,
             screenshot=None,
         )
-        http_archive_capture = None
+        http_archive = None
     finally:
         shutil.rmtree(http_archive_dir, ignore_errors=True)
 
-    snapshot = _build_snapshot(body, result, http_archive_capture)
+    snapshot = _build_snapshot(body, result, http_archive)
     session.add(snapshot)
     await session.commit()
     logger.info(
-        "Captured %s id=%s: status=%s condition_met=%s"
-        " http_archive=%s response_bodies=%d error=%s",
+        "Captured %s id=%s: status=%s condition_met=%s http_archive=%s error=%s",
         snapshot.url,
         snapshot.id,
         snapshot.http_status,
         snapshot.condition_met,
         snapshot.http_archive is not None,
-        len(snapshot.response_bodies),
         snapshot.error,
     )
     return _snapshot_out(snapshot)
@@ -310,10 +297,10 @@ async def create_snapshot(
 def _build_snapshot(
     body: SnapshotCreate,
     result: CaptureResult,
-    http_archive_capture,
+    http_archive: str | None,
 ) -> Snapshot:
     """Map captured evidence onto a persistable ``Snapshot`` row."""
-    snapshot = Snapshot(
+    return Snapshot(
         url=str(body.url),
         final_url=result.final_url,
         http_status=result.http_status,
@@ -324,12 +311,5 @@ def _build_snapshot(
         plaintext=result.plaintext,
         rendered_html=result.rendered_html,
         screenshot=result.screenshot,
-        http_archive=http_archive_capture.http_archive
-        if http_archive_capture
-        else None,
+        http_archive=http_archive,
     )
-    if http_archive_capture:
-        snapshot.response_bodies = [
-            ResponseBody(file=file) for file in http_archive_capture.response_bodies
-        ]
-    return snapshot

@@ -8,14 +8,13 @@ from sqlalchemy import (
     Boolean,
     DateTime,
     Enum,
-    ForeignKey,
     Integer,
     Text,
     func,
 )
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 engine = create_async_engine(os.environ["DATABASE_URL"])
 async_session = async_sessionmaker(engine, expire_on_commit=False)
@@ -58,31 +57,6 @@ class Snapshot(Base):
     # Content-addressed filename of the recorded HAR (metadata only; each
     # entry's ``content._file`` points at a body stored in its own blob).
     http_archive: Mapped[str | None] = mapped_column(Text, nullable=True)
-
-    response_bodies: Mapped[list["ResponseBody"]] = relationship(
-        back_populates="snapshot"
-    )
-
-
-class ResponseBody(Base):
-    """One response body extracted from the page's HAR recording.
-
-    ``file`` is a content-addressed filename (``<sha1>.<extension>``) under
-    the shared storage backend. The corresponding request metadata lives in
-    the snapshot's HAR, which references this file via ``content._file``.
-    """
-
-    __tablename__ = "response_body"
-
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
-    snapshot_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("snapshot.id"), nullable=False
-    )
-    file: Mapped[str] = mapped_column(Text, nullable=False)
-
-    snapshot: Mapped["Snapshot"] = relationship(back_populates="response_bodies")
 
 
 async def init_db() -> None:

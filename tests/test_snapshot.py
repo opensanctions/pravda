@@ -5,7 +5,6 @@ import pytest
 from playwright.async_api import Browser
 from playwright.async_api import TimeoutError as PlaywrightTimeout
 from sqlalchemy import select
-from sqlalchemy.orm import selectinload
 
 from pravda.api import SnapshotCreate, _build_snapshot
 from pravda.capture import CaptureResult, capture_page
@@ -146,11 +145,7 @@ async def test_captured_evidence_persists(db_session):
     await db_session.flush()
 
     loaded = (
-        await db_session.execute(
-            select(Snapshot)
-            .where(Snapshot.id == snapshot.id)
-            .options(selectinload(Snapshot.response_bodies))
-        )
+        await db_session.execute(select(Snapshot).where(Snapshot.id == snapshot.id))
     ).scalar_one()
 
     assert loaded.url == "https://example.com/"
@@ -161,4 +156,3 @@ async def test_captured_evidence_persists(db_session):
     assert loaded.plaintext is None
     assert loaded.screenshot is None
     assert loaded.http_archive is None
-    assert list(loaded.response_bodies) == []

@@ -39,8 +39,14 @@ def normalize_hostname(url: str) -> str:
     return host.encode("idna").decode("ascii")
 
 
-def content_path(url: str, name: str) -> str:
-    return os.path.join(_base_path, normalize_hostname(url), name)
+def content_prefix(url: str) -> str:
+    """Full storage prefix for artifacts captured from *url*.
+
+    The base path of the storage backend joined with *url*'s normalized
+    hostname, so that ``content_prefix(url) + "/" + filename`` is the
+    location a downstream service reads the file from.
+    """
+    return os.path.join(_base_path, normalize_hostname(url))
 
 
 def content_hash(data: bytes) -> str:
@@ -60,7 +66,7 @@ async def put_blob(name: str, data: bytes, url: str) -> str:
     caller computes the hash via ``content_hash`` and appends the extension.
     Returns *name*.
     """
-    host_dir = os.path.join(_base_path, normalize_hostname(url))
+    host_dir = content_prefix(url)
     path = os.path.join(host_dir, name)
 
     if await fs._exists(path):
