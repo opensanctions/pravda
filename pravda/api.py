@@ -1,10 +1,13 @@
 import json
 import logging
 import os
+import shutil
+import tempfile
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import datetime
+from pathlib import Path
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, Query
@@ -16,7 +19,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from pravda.capture import CaptureResult, capture_page
-from pravda.db import ConditionType, Header, Snapshot, get_session, init_db
+from pravda.db import ConditionType, Content, Header, Snapshot, get_session, init_db
+from pravda.har import capture_har
 from pravda.storage import content_path
 
 BROWSER_CHANNEL = "chrome"
@@ -84,16 +88,31 @@ class HeaderOut(BaseModel):
     value: str = Field(description="HTTP header value")
 
 
+class ContentOut(BaseModel):
+    """One response body extracted from the page's HAR recording."""
+
+    file: str = Field(
+        description=(
+            "Content-addressed storage location of the response body "
+            "(``<sha256>.<extension>``)"
+        )
+    )
+
+
 class SnapshotOut(BaseModel):
     """A captured snapshot of a web page.
 
-    `plaintext`, `rendered_html`, `screenshot`, and `blob` are content-addressed
+    `plaintext`, `rendered_html`, and `screenshot` are content-addressed
     storage locations (a filename of the form ``<sha256>.<extension>``) under
     the shared storage backend. Downstream services with access to that backend
     read the files directly from the returned location — there is no blob
     download endpoint. Each is null when that artifact was not captured (e.g.
     the page never committed, or the capture timed out). The file extension
-    carries the artifact's type (txt, html, png, mhtml).
+    carries the artifact's type (txt, html, png). `har` is the
+    content-addressed storage location of the recorded HAR (``.har``) —
+    metadata only, with each entry's ``content._file`` pointing at a body
+    stored under its own content-addressed location. `contents` lists those
+    body locations. `har` is null when navigation never committed.
     """
 
     id: uuid.UUID
@@ -136,12 +155,15 @@ class SnapshotOut(BaseModel):
             "(``.png``), or null"
         ),
     )
-    blob: str | None = Field(
+    har: str | None = Field(
         default=None,
         description=(
-            "Content-addressed storage location of the archive blob "
-            "(``.mhtml`` today), or null"
+            "Content-addressed storage location of the recorded HAR "
+            "(``.har``; metadata only), or null"
         ),
+    )
+    contents: list[ContentOut] = Field(
+        description="Response bodies recorded in the page's HAR"
     )
     headers: list[HeaderOut] = Field(description="Response headers from the page")
 
@@ -172,7 +194,7 @@ async def list_snapshots(
         .order_by(Snapshot.captured_at.desc())
         .offset((page - 1) * PAGE_SIZE)
         .limit(PAGE_SIZE)
-        .options(selectinload(Snapshot.headers))
+        .options(selectinload(Snapshot.headers), selectinload(Snapshot.contents))
     )
     rows = (await session.execute(rows_stmt)).scalars().all()
 
@@ -207,7 +229,11 @@ def _snapshot_out(snapshot: Snapshot) -> SnapshotOut:
             if snapshot.screenshot
             else None
         ),
-        blob=content_path(prefix_url, snapshot.blob) if snapshot.blob else None,
+        har=content_path(prefix_url, snapshot.har) if snapshot.har else None,
+        contents=[
+            ContentOut(file=content_path(prefix_url, content.file))
+            for content in snapshot.contents
+        ],
         headers=[
             HeaderOut(name=header.name, value=header.value)
             for header in snapshot.headers
@@ -226,6 +252,7 @@ async def create_snapshot(
         body.condition_type.value,
         body.condition,
     )
+    har_dir = Path(tempfile.mkdtemp())
     try:
         async with async_playwright() as playwright:
             browser = await playwright.chromium.connect(
@@ -236,7 +263,15 @@ async def create_snapshot(
                     ),
                 },
             )
-            context = await browser.new_context()
+            # Record a HAR of all network activity, with response bodies
+            # stored as separate entries inside a zip archive
+            # (record_har_content="attach" + a .zip path). The file is flushed
+            # when the context closes.
+            har_path = har_dir / "record.zip"
+            context = await browser.new_context(
+                record_har_path=str(har_path),
+                record_har_content="attach",
+            )
             page = await context.new_page()
 
             result = await capture_page(
@@ -247,6 +282,12 @@ async def create_snapshot(
             )
 
             await context.close()
+
+            # The HAR is written when the context closes. Unpack it only when
+            # navigation committed — otherwise it holds no useful evidence.
+            har_capture = None
+            if result.http_status is not None and har_path.exists():
+                har_capture = await capture_har(har_path, str(body.url))
     except PlaywrightError as error:
         # Couldn't even reach the browser — record an empty, failed result.
         logger.error("Browser error for %s: %s", body.url, error.message)
@@ -259,31 +300,32 @@ async def create_snapshot(
             plaintext=None,
             rendered_html=None,
             screenshot=None,
-            blob=None,
         )
+        har_capture = None
+    finally:
+        shutil.rmtree(har_dir, ignore_errors=True)
 
-    snapshot = _build_snapshot(body, result)
+    snapshot = _build_snapshot(body, result, har_capture)
     session.add(snapshot)
     await session.commit()
-    artifacts = (
-        snapshot.plaintext,
-        snapshot.rendered_html,
-        snapshot.screenshot,
-        snapshot.blob,
-    )
     logger.info(
-        "Captured %s id=%s: status=%s condition_met=%s artifacts=%d error=%s",
+        "Captured %s id=%s: status=%s condition_met=%s har=%s contents=%d error=%s",
         snapshot.url,
         snapshot.id,
         snapshot.http_status,
         snapshot.condition_met,
-        sum(hash is not None for hash in artifacts),
+        snapshot.har is not None,
+        len(snapshot.contents),
         snapshot.error,
     )
     return _snapshot_out(snapshot)
 
 
-def _build_snapshot(body: SnapshotCreate, result: CaptureResult) -> Snapshot:
+def _build_snapshot(
+    body: SnapshotCreate,
+    result: CaptureResult,
+    har_capture,
+) -> Snapshot:
     """Map captured evidence onto a persistable ``Snapshot`` row."""
     snapshot = Snapshot(
         url=str(body.url),
@@ -296,9 +338,11 @@ def _build_snapshot(body: SnapshotCreate, result: CaptureResult) -> Snapshot:
         plaintext=result.plaintext,
         rendered_html=result.rendered_html,
         screenshot=result.screenshot,
-        blob=result.blob,
+        har=har_capture.har if har_capture else None,
     )
     snapshot.headers = [
         Header(name=name, value=value) for name, value in result.headers.items()
     ]
+    if har_capture:
+        snapshot.contents = [Content(file=file) for file in har_capture.contents]
     return snapshot

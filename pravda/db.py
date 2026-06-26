@@ -55,9 +55,12 @@ class Snapshot(Base):
     plaintext: Mapped[str | None] = mapped_column(Text, nullable=True)
     rendered_html: Mapped[str | None] = mapped_column(Text, nullable=True)
     screenshot: Mapped[str | None] = mapped_column(Text, nullable=True)
-    blob: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Content-addressed filename of the recorded HAR (metadata only; each
+    # entry's ``content._file`` points at a body stored in its own blob).
+    har: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     headers: Mapped[list["Header"]] = relationship(back_populates="snapshot")
+    contents: Mapped[list["Content"]] = relationship(back_populates="snapshot")
 
 
 class Header(Base):
@@ -73,6 +76,27 @@ class Header(Base):
     value: Mapped[str] = mapped_column(Text, nullable=False)
 
     snapshot: Mapped["Snapshot"] = relationship(back_populates="headers")
+
+
+class Content(Base):
+    """One response body extracted from the page's HAR recording.
+
+    ``file`` is a content-addressed filename (``<sha256>.<extension>``) under
+    the shared storage backend. The corresponding request metadata lives in
+    the snapshot's HAR, which references this file via ``content._file``.
+    """
+
+    __tablename__ = "content"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    snapshot_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("snapshot.id"), nullable=False
+    )
+    file: Mapped[str] = mapped_column(Text, nullable=False)
+
+    snapshot: Mapped["Snapshot"] = relationship(back_populates="contents")
 
 
 async def init_db() -> None:

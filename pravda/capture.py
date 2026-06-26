@@ -16,7 +16,7 @@ NAV_TIMEOUT_MS = 10_000
 # Timeout for waiting on the page condition after navigation.
 CONDITION_TIMEOUT_MS = 30_000
 
-# Timeout for each individual capture operation (MHTML, screenshot, etc.).
+# Timeout for each individual capture operation (screenshot, etc.).
 CAPTURE_TIMEOUT_MS = 15_000
 
 
@@ -32,7 +32,6 @@ class CaptureResult:
     plaintext: str | None
     rendered_html: str | None
     screenshot: str | None
-    blob: str | None
 
 
 async def capture_page(
@@ -43,7 +42,11 @@ async def capture_page(
     condition_timeout_ms: int = CONDITION_TIMEOUT_MS,
 ) -> CaptureResult:
     """Navigate to *url* and capture evidence: HTTP response and
-    MHTML/screenshot/HTML/text blobs.
+    screenshot/HTML/text blobs.
+
+    The network archive (a HAR recording) is not captured here — it is bound
+    to the browser context's lifecycle, so the caller (which owns the
+    context) is responsible for it.
 
     Returns the evidence as a ``CaptureResult``. Storing it is the caller's
     job — this function never touches the database.
@@ -54,7 +57,7 @@ async def capture_page(
 
     if navigation.http_status is None:
         # Navigation never committed — there is nothing on the page to capture.
-        artifacts = CapturedArtifacts(None, None, None, None)
+        artifacts = CapturedArtifacts(None, None, None)
     else:
         artifacts = await _capture_artifacts(page, navigation.final_url)
 
@@ -67,7 +70,6 @@ async def capture_page(
         plaintext=artifacts.plaintext,
         rendered_html=artifacts.rendered_html,
         screenshot=artifacts.screenshot,
-        blob=artifacts.blob,
     )
 
 
@@ -138,34 +140,26 @@ async def _navigate(
 
 @dataclass
 class CapturedArtifacts:
-    """Filenames of the four captured artifacts.
+    """Filenames of the three per-page captured artifacts.
 
     Each is a content address ``<sha256>.<extension>``; the extension
-    (txt/html/png/mhtml) carries the artifact's type.
+    (txt/html/png) carries the artifact's type.
     """
 
     plaintext: str | None
     rendered_html: str | None
     screenshot: str | None
-    blob: str | None
 
 
 async def _capture_artifacts(page: Page, url: str) -> CapturedArtifacts:
-    """Stop any pending requests, then capture the four artifacts.
+    """Stop any pending requests, then capture the three artifacts.
 
     Stopping the page first forces it into a terminal, capturable state —
-    otherwise screenshot/MHTML could stall on resources that never arrive.
+    otherwise the screenshot could stall on resources that never arrive.
     This mirrors hitting the browser's stop button.
     """
     cdp = await page.context.new_cdp_session(page)
     await cdp.send("Page.stopLoading", {})
-
-    async def capture_mhtml() -> str:
-        result = await asyncio.wait_for(
-            cdp.send("Page.captureSnapshot", {"format": "mhtml"}),
-            CAPTURE_TIMEOUT_MS / 1000,
-        )
-        return result["data"]
 
     plaintext = await _capture_one(
         "plaintext",
@@ -200,13 +194,11 @@ async def _capture_artifacts(page: Page, url: str) -> CapturedArtifacts:
         url,
         "png",
     )
-    blob = await _capture_one("blob", capture_mhtml, url, "mhtml")
 
     return CapturedArtifacts(
         plaintext=plaintext,
         rendered_html=rendered_html,
         screenshot=screenshot,
-        blob=blob,
     )
 
 

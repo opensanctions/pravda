@@ -40,11 +40,12 @@ async def test_capture_page_returns_evidence(browser: Browser):
     assert result.error is None
     assert result.final_url == "https://example.com/"
 
-    # All four artifacts captured, each a <sha256>.<ext> filename
+    # All three per-page artifacts captured, each a <sha256>.<ext> filename.
+    # The HAR is a context-lifecycle concern handled by the API layer, so
+    # capture_page does not touch it.
     assert result.plaintext.endswith(".txt")
     assert result.rendered_html.endswith(".html")
     assert result.screenshot.endswith(".png")
-    assert result.blob.endswith(".mhtml")
 
     assert "content-type" in result.headers
 
@@ -75,7 +76,6 @@ async def test_capture_page_goto_timeout_skips_captures(browser: Browser):
     assert result.plaintext is None
     assert result.rendered_html is None
     assert result.screenshot is None
-    assert result.blob is None
 
 
 @pytest.mark.asyncio
@@ -127,7 +127,6 @@ async def test_http_commit_captured_when_load_times_out(browser: Browser):
     assert result.plaintext is not None
     assert result.rendered_html is not None
     assert result.screenshot is not None
-    assert result.blob is not None
 
     # Headers were captured
     assert "content-type" in result.headers
@@ -147,10 +146,9 @@ async def test_captured_evidence_persists(db_session):
         plaintext=None,
         rendered_html="a" * 64 + ".html",
         screenshot=None,
-        blob=None,
     )
 
-    snapshot = _build_snapshot(body, result)
+    snapshot = _build_snapshot(body, result, None)
     db_session.add(snapshot)
     await db_session.flush()
 
@@ -158,7 +156,7 @@ async def test_captured_evidence_persists(db_session):
         await db_session.execute(
             select(Snapshot)
             .where(Snapshot.id == snapshot.id)
-            .options(selectinload(Snapshot.headers))
+            .options(selectinload(Snapshot.headers), selectinload(Snapshot.contents))
         )
     ).scalar_one()
 
@@ -169,7 +167,8 @@ async def test_captured_evidence_persists(db_session):
     assert loaded.rendered_html == "a" * 64 + ".html"
     assert loaded.plaintext is None
     assert loaded.screenshot is None
-    assert loaded.blob is None
+    assert loaded.har is None
+    assert list(loaded.contents) == []
     assert [(h.name, h.value) for h in loaded.headers] == [
         ("content-type", "text/html")
     ]
