@@ -1,6 +1,6 @@
 # Pravda
 
-Pravda is the evidence layer — a service that other services build on. It captures and stores durable, addressable evidence of web pages (MHTML archives, screenshots, headers, metadata) that downstream services can inspect, diff, and reason over.
+Pravda is the evidence layer — a service that other services build on. It captures and stores durable, addressable evidence of web pages (HAR network recordings, screenshots, rendered HTML, plaintext, metadata) that downstream services can inspect, diff, and reason over.
 
 ## Project philosophy
 
@@ -16,17 +16,7 @@ Pravda is the evidence layer — a service that other services build on. It capt
 - **Playwright** (Python) connecting over WebSocket to a Docker container.
 - Docker container runs **headed** Chrome in a virtual framebuffer (xvfb), exposed via `playwright run-server`. Headed mode avoids headless-detection fingerprinting that some sites use to block scrapers.
 - Launch options (`channel`, `headless`, etc.) are sent from the Python client via the `x-playwright-launch-options` WebSocket header — no custom server JS needed.
-
-## Project structure
-
-```
-.env                     # environment-specific config (not committed)
-.env.example             # template with defaults (committed)
-Dockerfile               # Chrome + xvfb + run-server
-docker-compose.yml       # single "playwright" service
-pravda/
-  __init__.py
-```
+- **Postgres** accessed via **SQLAlchemy** (async) — stores snapshot metadata and the index of recorded response bodies. The schema is created on startup; there are no migrations yet.
 
 ## Conventions
 

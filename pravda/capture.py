@@ -89,8 +89,7 @@ async def _navigate(
     """Navigate to *url*, then wait for the requested condition.
 
     Status is read at "commit" (first response), *before* the condition
-    wait — so a condition timeout still records the HTTP response. Response
-    headers live in the HAR recording, so they are not captured here.
+    wait — so a condition timeout still records the HTTP response.
 
     Lifecycle conditions use Playwright's ``wait_for_load_state`` ("commit"
     needs no extra wait — ``page.goto`` already waited for it); selector
