@@ -94,7 +94,7 @@ class ContentOut(BaseModel):
     file: str = Field(
         description=(
             "Content-addressed storage location of the response body "
-            "(``<sha256>.<extension>``)"
+            "(``<sha1>.<extension>``)"
         )
     )
 
@@ -103,7 +103,7 @@ class SnapshotOut(BaseModel):
     """A captured snapshot of a web page.
 
     `plaintext`, `rendered_html`, and `screenshot` are content-addressed
-    storage locations (a filename of the form ``<sha256>.<extension>``) under
+    storage locations (a filename of the form ``<sha1>.<extension>``) under
     the shared storage backend. Downstream services with access to that backend
     read the files directly from the returned location — there is no blob
     download endpoint. Each is null when that artifact was not captured (e.g.

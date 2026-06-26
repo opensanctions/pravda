@@ -43,14 +43,23 @@ def content_path(url: str, name: str) -> str:
     return os.path.join(_base_path, normalize_hostname(url), name)
 
 
-async def put_blob(data: bytes, url: str, extension: str) -> str:
-    """Store *data* under the hostname prefix of *url*.
+def content_hash(data: bytes) -> str:
+    """SHA-1 hex digest of *data*.
 
-    The file is named ``<sha256>.<extension>``; the extension carries the
-    artifact's type (txt, html, png, mhtml, ...). Returns that filename.
+    Content address following the same scheme Playwright uses for its HAR
+    resources: a file is named ``<sha1>.<extension>``. The caller appends the
+    extension (derived from the MIME type) — see ``put_blob``.
     """
-    hash_hex = hashlib.sha256(data).hexdigest()
-    name = f"{hash_hex}.{extension}"
+    return hashlib.sha1(data).hexdigest()
+
+
+async def put_blob(name: str, data: bytes, url: str) -> str:
+    """Store *data* under the hostname prefix of *url* as *name*.
+
+    *name* is a content-addressed filename (``<sha1>.<extension>``); the
+    caller computes the hash via ``content_hash`` and appends the extension.
+    Returns *name*.
+    """
     host_dir = os.path.join(_base_path, normalize_hostname(url))
     path = os.path.join(host_dir, name)
 

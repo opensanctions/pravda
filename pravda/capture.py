@@ -6,7 +6,7 @@ from playwright.async_api import Page
 from playwright.async_api import TimeoutError as PlaywrightTimeout
 
 from pravda.db import ConditionType
-from pravda.storage import put_blob
+from pravda.storage import content_hash, put_blob
 
 logger = logging.getLogger(__name__)
 
@@ -142,7 +142,7 @@ async def _navigate(
 class CapturedArtifacts:
     """Filenames of the three per-page captured artifacts.
 
-    Each is a content address ``<sha256>.<extension>``; the extension
+    Each is a content address ``<sha1>.<extension>``; the extension
     (txt/html/png) carries the artifact's type.
     """
 
@@ -208,7 +208,8 @@ async def _capture_one(name: str, callback, url: str, extension: str) -> str | N
         data = await callback()
         if isinstance(data, str):
             data = data.encode()
-        return await put_blob(data, url, extension)
+        name = f"{content_hash(data)}.{extension}"
+        return await put_blob(name, data, url)
     except (asyncio.TimeoutError, PlaywrightTimeout):
         logger.warning("Timeout capturing %s for %s", name, url)
         return None

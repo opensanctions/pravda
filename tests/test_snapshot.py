@@ -40,7 +40,7 @@ async def test_capture_page_returns_evidence(browser: Browser):
     assert result.error is None
     assert result.final_url == "https://example.com/"
 
-    # All three per-page artifacts captured, each a <sha256>.<ext> filename.
+    # All three per-page artifacts captured, each a <sha1>.<ext> filename.
     # The HAR is a context-lifecycle concern handled by the API layer, so
     # capture_page does not touch it.
     assert result.plaintext.endswith(".txt")
@@ -144,7 +144,7 @@ async def test_captured_evidence_persists(db_session):
         headers={"content-type": "text/html"},
         final_url="https://example.com/",
         plaintext=None,
-        rendered_html="a" * 64 + ".html",
+        rendered_html="a" * 40 + ".html",
         screenshot=None,
     )
 
@@ -164,7 +164,7 @@ async def test_captured_evidence_persists(db_session):
     assert loaded.final_url == "https://example.com/"
     assert loaded.http_status == 200
     assert loaded.condition_met is True
-    assert loaded.rendered_html == "a" * 64 + ".html"
+    assert loaded.rendered_html == "a" * 40 + ".html"
     assert loaded.plaintext is None
     assert loaded.screenshot is None
     assert loaded.har is None

@@ -1,18 +1,17 @@
-import hashlib
 from pathlib import Path
 
 import pytest
 
-from pravda.storage import content_path, put_blob
+from pravda.storage import content_hash, content_path, put_blob
 
 
 @pytest.mark.asyncio
 async def test_put_blob_stores_at_content_address():
     data = b"hello pravda"
-    expected_hash = hashlib.sha256(data).hexdigest()
+    name = f"{content_hash(data)}.txt"
 
-    name = await put_blob(data, "https://www.example.com/path", "txt")
-    assert name == f"{expected_hash}.txt"
+    stored = await put_blob(name, data, "https://www.example.com/path")
+    assert stored == name
 
     # Verify the file was written under the normalized hostname prefix
     path = Path(content_path("https://www.example.com", name))
@@ -22,9 +21,10 @@ async def test_put_blob_stores_at_content_address():
 @pytest.mark.asyncio
 async def test_put_blob_deduplicates():
     data = b"same content twice"
+    name = f"{content_hash(data)}.mhtml"
 
-    name1 = await put_blob(data, "https://example.com", "mhtml")
-    name2 = await put_blob(data, "https://example.com", "mhtml")
+    name1 = await put_blob(name, data, "https://example.com")
+    name2 = await put_blob(name, data, "https://example.com")
     assert name1 == name2
 
 

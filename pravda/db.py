@@ -50,7 +50,7 @@ class Snapshot(Base):
     condition_met: Mapped[bool] = mapped_column(Boolean, nullable=False)
 
     # Captured evidence. Each is a content-addressed filename
-    # (``<sha256>.<extension>``) under the shared storage backend; the
+    # (``<sha1>.<extension>``) under the shared storage backend; the
     # extension carries the artifact's type, so no separate MIME column.
     plaintext: Mapped[str | None] = mapped_column(Text, nullable=True)
     rendered_html: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -81,7 +81,7 @@ class Header(Base):
 class Content(Base):
     """One response body extracted from the page's HAR recording.
 
-    ``file`` is a content-addressed filename (``<sha256>.<extension>``) under
+    ``file`` is a content-addressed filename (``<sha1>.<extension>``) under
     the shared storage backend. The corresponding request metadata lives in
     the snapshot's HAR, which references this file via ``content._file``.
     """
