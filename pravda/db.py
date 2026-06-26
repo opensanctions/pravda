@@ -59,23 +59,7 @@ class Snapshot(Base):
     # entry's ``content._file`` points at a body stored in its own blob).
     har: Mapped[str | None] = mapped_column(Text, nullable=True)
 
-    headers: Mapped[list["Header"]] = relationship(back_populates="snapshot")
     contents: Mapped[list["Content"]] = relationship(back_populates="snapshot")
-
-
-class Header(Base):
-    __tablename__ = "header"
-
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
-    snapshot_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("snapshot.id"), nullable=False
-    )
-    name: Mapped[str] = mapped_column(Text, nullable=False)
-    value: Mapped[str] = mapped_column(Text, nullable=False)
-
-    snapshot: Mapped["Snapshot"] = relationship(back_populates="headers")
 
 
 class Content(Base):

@@ -47,8 +47,6 @@ async def test_capture_page_returns_evidence(browser: Browser):
     assert result.rendered_html.endswith(".html")
     assert result.screenshot.endswith(".png")
 
-    assert "content-type" in result.headers
-
 
 @pytest.mark.asyncio
 async def test_capture_page_goto_timeout_skips_captures(browser: Browser):
@@ -80,7 +78,7 @@ async def test_capture_page_goto_timeout_skips_captures(browser: Browser):
 
 @pytest.mark.asyncio
 async def test_http_commit_captured_when_load_times_out(browser: Browser):
-    """HTTP status/headers come from commit; load times out.
+    """HTTP status comes from commit; load times out.
 
     The two-step navigation means we get the HTTP response even when the
     page never finishes loading. Captures still run because DOMContentLoaded
@@ -98,7 +96,7 @@ async def test_http_commit_captured_when_load_times_out(browser: Browser):
         "https://slow.example.com",
         lambda route: route.fulfill(
             body=(FIXTURES / "blocking.html").read_text(),
-            headers={"content-type": "text/html", "x-test": "yes"},
+            headers={"content-type": "text/html"},
         ),
     )
 
@@ -128,10 +126,6 @@ async def test_http_commit_captured_when_load_times_out(browser: Browser):
     assert result.rendered_html is not None
     assert result.screenshot is not None
 
-    # Headers were captured
-    assert "content-type" in result.headers
-    assert "x-test" in result.headers
-
 
 @pytest.mark.asyncio
 async def test_captured_evidence_persists(db_session):
@@ -141,7 +135,6 @@ async def test_captured_evidence_persists(db_session):
         http_status=200,
         error=None,
         condition_met=True,
-        headers={"content-type": "text/html"},
         final_url="https://example.com/",
         plaintext=None,
         rendered_html="a" * 40 + ".html",
@@ -156,7 +149,7 @@ async def test_captured_evidence_persists(db_session):
         await db_session.execute(
             select(Snapshot)
             .where(Snapshot.id == snapshot.id)
-            .options(selectinload(Snapshot.headers), selectinload(Snapshot.contents))
+            .options(selectinload(Snapshot.contents))
         )
     ).scalar_one()
 
@@ -169,6 +162,3 @@ async def test_captured_evidence_persists(db_session):
     assert loaded.screenshot is None
     assert loaded.har is None
     assert list(loaded.contents) == []
-    assert [(h.name, h.value) for h in loaded.headers] == [
-        ("content-type", "text/html")
-    ]

@@ -19,7 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from pravda.capture import CaptureResult, capture_page
-from pravda.db import ConditionType, Content, Header, Snapshot, get_session, init_db
+from pravda.db import ConditionType, Content, Snapshot, get_session, init_db
 from pravda.har import capture_har
 from pravda.storage import content_path
 
@@ -81,11 +81,6 @@ class SnapshotCreate(BaseModel):
                     f"got '{self.condition}'"
                 )
         return self
-
-
-class HeaderOut(BaseModel):
-    name: str = Field(description="HTTP header name (lowercased)")
-    value: str = Field(description="HTTP header value")
 
 
 class ContentOut(BaseModel):
@@ -165,7 +160,6 @@ class SnapshotOut(BaseModel):
     contents: list[ContentOut] = Field(
         description="Response bodies recorded in the page's HAR"
     )
-    headers: list[HeaderOut] = Field(description="Response headers from the page")
 
 
 class SnapshotsOut(BaseModel):
@@ -194,7 +188,7 @@ async def list_snapshots(
         .order_by(Snapshot.captured_at.desc())
         .offset((page - 1) * PAGE_SIZE)
         .limit(PAGE_SIZE)
-        .options(selectinload(Snapshot.headers), selectinload(Snapshot.contents))
+        .options(selectinload(Snapshot.contents))
     )
     rows = (await session.execute(rows_stmt)).scalars().all()
 
@@ -233,10 +227,6 @@ def _snapshot_out(snapshot: Snapshot) -> SnapshotOut:
         contents=[
             ContentOut(file=content_path(prefix_url, content.file))
             for content in snapshot.contents
-        ],
-        headers=[
-            HeaderOut(name=header.name, value=header.value)
-            for header in snapshot.headers
         ],
     )
 
@@ -295,7 +285,6 @@ async def create_snapshot(
             http_status=None,
             error=error.message,
             condition_met=False,
-            headers={},
             final_url=None,
             plaintext=None,
             rendered_html=None,
@@ -340,9 +329,6 @@ def _build_snapshot(
         screenshot=result.screenshot,
         har=har_capture.har if har_capture else None,
     )
-    snapshot.headers = [
-        Header(name=name, value=value) for name, value in result.headers.items()
-    ]
     if har_capture:
         snapshot.contents = [Content(file=file) for file in har_capture.contents]
     return snapshot

@@ -27,7 +27,6 @@ class CaptureResult:
     http_status: int | None
     error: str | None
     condition_met: bool
-    headers: dict[str, str]
     final_url: str | None
     plaintext: str | None
     rendered_html: str | None
@@ -65,7 +64,6 @@ async def capture_page(
         http_status=navigation.http_status,
         error=navigation.error,
         condition_met=navigation.condition_met,
-        headers=navigation.headers,
         final_url=navigation.final_url,
         plaintext=artifacts.plaintext,
         rendered_html=artifacts.rendered_html,
@@ -76,7 +74,6 @@ async def capture_page(
 @dataclass
 class _Navigation:
     http_status: int | None
-    headers: dict[str, str]
     condition_met: bool
     error: str | None
     final_url: str | None
@@ -91,22 +88,19 @@ async def _navigate(
 ) -> _Navigation:
     """Navigate to *url*, then wait for the requested condition.
 
-    Status and headers are read at "commit" (first response), *before* the
-    condition wait — so a condition timeout still records the HTTP response.
+    Status is read at "commit" (first response), *before* the condition
+    wait — so a condition timeout still records the HTTP response. Response
+    headers live in the HAR recording, so they are not captured here.
 
     Lifecycle conditions use Playwright's ``wait_for_load_state`` ("commit"
     needs no extra wait — ``page.goto`` already waited for it); selector
     conditions use ``wait_for_selector``.
     """
     http_status: int | None = None
-    headers: dict[str, str] = {}
     final_url: str | None = None
     try:
         response = await page.goto(url, wait_until="commit", timeout=NAV_TIMEOUT_MS)
         http_status = response.status
-        headers = {
-            key.lower(): value for key, value in (await response.all_headers()).items()
-        }
         # page.url reflects any redirects that happened during navigation.
         final_url = page.url
 
@@ -117,7 +111,6 @@ async def _navigate(
 
         return _Navigation(
             http_status,
-            headers,
             condition_met=True,
             error=None,
             final_url=final_url,
@@ -134,7 +127,7 @@ async def _navigate(
             error,
         )
         return _Navigation(
-            http_status, headers, condition_met=False, error=error, final_url=final_url
+            http_status, condition_met=False, error=error, final_url=final_url
         )
 
 
