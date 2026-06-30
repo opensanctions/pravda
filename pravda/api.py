@@ -260,7 +260,7 @@ async def create_snapshot(
             http_archive = None
             if result.http_status is not None and http_archive_path.exists():
                 capture = await capture_http_archive(
-                    http_archive_path, result.final_url
+                    http_archive_path, result.final_url, download=result.download
                 )
                 http_archive = capture.http_archive if capture else None
     except PlaywrightError as error:
@@ -274,6 +274,7 @@ async def create_snapshot(
             plaintext=None,
             rendered_html=None,
             screenshot=None,
+            download=None,
         )
         http_archive = None
     finally:

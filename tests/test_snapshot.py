@@ -48,6 +48,48 @@ async def test_capture_page_returns_evidence(browser: Browser):
 
 
 @pytest.mark.asyncio
+async def test_capture_page_downloads_pdf(browser: Browser):
+    """A URL serving application/pdf is captured as a downloaded body.
+
+    Chrome's PDF viewer would eat the response body, but the
+    ``AlwaysOpenPdfExternally`` policy (baked into the browser image) makes
+    Chrome download it instead. Playwright fires a ``download`` event and we
+    recover the real bytes; the caller folds them back into the HAR, so no
+    dedicated PDF field is needed.
+    """
+    fixture_pdf = (FIXTURES / "sample.pdf").read_bytes()
+
+    context = await browser.new_context()
+    page = await context.new_page()
+
+    await page.route(
+        "https://example.com/doc.pdf",
+        lambda route: route.fulfill(
+            body=fixture_pdf,
+            headers={"content-type": "application/pdf"},
+        ),
+    )
+
+    result = await capture_page(page, "https://example.com/doc.pdf")
+
+    await context.close()
+
+    assert result.http_status == 200
+    assert result.condition_met is True
+    assert result.error is None
+    assert result.final_url == "https://example.com/doc.pdf"
+
+    # The PDF bytes were recovered from the download; the tab held nothing
+    # meaningful, so the page-content artifacts are skipped.
+    assert result.download is not None
+    assert result.download.url == "https://example.com/doc.pdf"
+    assert result.download.data == fixture_pdf
+    assert result.plaintext is None
+    assert result.rendered_html is None
+    assert result.screenshot is None
+
+
+@pytest.mark.asyncio
 async def test_capture_page_goto_timeout_skips_captures(browser: Browser):
     """A navigation that never commits skips captures entirely."""
 
@@ -138,6 +180,7 @@ async def test_captured_evidence_persists(db_session):
         plaintext=None,
         rendered_html="a" * 40 + ".html",
         screenshot=None,
+        download=None,
     )
 
     snapshot = _build_snapshot(body, result, None)
