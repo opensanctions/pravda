@@ -14,7 +14,6 @@ import logging
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
-from urllib.parse import urlparse
 
 from pravda.capture import DownloadedBody
 from pravda.storage import content_hash, put_blob
@@ -73,23 +72,18 @@ async def capture_http_archive(
     return HttpArchiveCapture(http_archive=http_archive_name)
 
 
-def _extension_for(url: str, mime_type: str | None) -> str:
-    """Derive a body filename extension, matching Playwright's convention.
+async def _store_body(download: DownloadedBody, url: str) -> str:
+    """Store a download's bytes as a ``<sha1>.<ext>`` blob, return its name.
 
-    Playwright takes the extension from the request URL's last path segment
-    (e.g. ``doc.pdf`` -> ``pdf``), falling back to the MIME subtype when the
-    URL has none (e.g. ``image/png`` -> ``png``).
+    The extension comes from ``download.suggested_filename`` — the name Chrome
+    itself chose for the download.
     """
-    last_segment = urlparse(url).path.rsplit("/", 1)[-1]
-    if "." in last_segment:
-        ext = last_segment.rsplit(".", 1)[-1]
-        if ext.isalnum():
-            return ext.lower()
-    if mime_type:
-        subtype = mime_type.split("/")[-1].split(";")[0].strip()
-        if subtype and "/" not in subtype:
-            return subtype.lower()
-    return ""
+    ext = Path(download.suggested_filename).suffix.lstrip(".").lower()
+    name = (
+        f"{content_hash(download.data)}.{ext}" if ext else content_hash(download.data)
+    )
+    await put_blob(name, download.data, url)
+    return name
 
 
 async def _inject_download(manifest: dict, download: DownloadedBody, url: str) -> None:
@@ -107,25 +101,7 @@ async def _inject_download(manifest: dict, download: DownloadedBody, url: str) -
         if content.get("_file"):
             # This entry already has a body; keep looking for the bodyless one.
             continue
-        ext = _extension_for(download.url, content.get("mimeType"))
-        name = (
-            f"{content_hash(download.data)}.{ext}"
-            if ext
-            else content_hash(download.data)
-        )
-        await put_blob(name, download.data, url)
+        name = await _store_body(download, url)
         content["_file"] = name
         content["size"] = len(download.data)
         return
-
-    # No matching bodyless entry — rare, but don't lose the bytes. Store the
-    # body as an orphan the manifest won't reference.
-    logger.warning(
-        "No bodyless HAR entry for download %s; storing body as orphan",
-        download.url,
-    )
-    ext = _extension_for(download.url, None)
-    name = (
-        f"{content_hash(download.data)}.{ext}" if ext else content_hash(download.data)
-    )
-    await put_blob(name, download.data, url)

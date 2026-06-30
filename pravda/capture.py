@@ -34,10 +34,15 @@ class DownloadedBody:
     instead and Playwright fires a ``download`` event yielding the real bytes.
     The caller folds these back into the HAR as a ``content._file`` entry, so
     the download is indistinguishable from any other captured body.
+
+    ``suggested_filename`` is the name Chrome itself chose for the download
+    (from the server's ``Content-Disposition``, the URL, or its default) — we
+    reuse its extension for the content-addressed blob.
     """
 
     url: str
     data: bytes
+    suggested_filename: str
 
 
 @dataclass
@@ -81,17 +86,20 @@ async def capture_page(
     """
     loop = asyncio.get_running_loop()
     download_future: asyncio.Future[Download] = loop.create_future()
-    navigation_status: list[int | None] = [None]
+    navigation_status: int | None = None
 
     def _record_download(download: Download) -> None:
         if not download_future.done():
             download_future.set_result(download)
 
     def _record_response(response) -> None:
-        # The main document response fires before ``goto`` raises
-        # "Download is starting", so we can still recover its status.
+        # ``goto`` itself returns the status for normal navigations. This
+        # listener is only the *fallback* for the download case: ``goto``
+        # raises "Download is starting" before it can return a response, so
+        # we capture the main document's status here while it still arrives.
+        nonlocal navigation_status
         if response.request.is_navigation_request():
-            navigation_status[0] = response.status
+            navigation_status = response.status
 
     page.on("download", _record_download)
     page.on("response", _record_response)
@@ -105,27 +113,16 @@ async def capture_page(
             # never reaches the renderer, so there is nothing on the page to
             # capture; instead we read the download's bytes for the caller to
             # fold back into the HAR.
-            download = await _next_download(download_future, url)
-            if download is not None:
-                final_url = download.url
-                data = await _read_download(download)
-                downloaded = (
-                    DownloadedBody(url=final_url, data=data)
-                    if data is not None
-                    else None
-                )
-                http_status = navigation_status[0]
-            else:
-                final_url = navigation.final_url
-                downloaded = None
-                http_status = None
+            downloaded, http_status, final_url = await _capture_download(
+                download_future, url, navigation_status, navigation.final_url
+            )
             artifacts = CapturedArtifacts(None, None, None)
         elif navigation.http_status is None:
             # Navigation never committed — there is nothing on the page to capture.
-            artifacts = CapturedArtifacts(None, None, None)
             downloaded = None
             final_url = navigation.final_url
             http_status = navigation.http_status
+            artifacts = CapturedArtifacts(None, None, None)
         else:
             downloaded = None
             final_url = navigation.final_url
@@ -322,12 +319,43 @@ async def _next_download(
         return None
 
 
-async def _read_download(download: Download) -> bytes | None:
-    """Materialize a download's bytes via a temp file."""
+async def _capture_download(
+    download_future: "asyncio.Future[Download]",
+    url: str,
+    fallback_status: int | None,
+    fallback_url: str | None,
+) -> tuple[DownloadedBody | None, int | None, str | None]:
+    """Recover the bytes of a navigation that handed off as a download.
+
+    Returns ``(download body, http status, final url)``. When the download
+    event never fires (or yields no bytes) there is nothing to report, so the
+    status and url fall back to what navigation itself saw.
+    """
+    download = await _next_download(download_future, url)
+    if download is None:
+        return None, None, fallback_url
+    body = await _read_download(download)
+    if body is None:
+        return None, None, download.url
+    return body, fallback_status, download.url
+
+
+async def _read_download(download: Download) -> DownloadedBody | None:
+    """Materialize a download's bytes via a temp file.
+
+    We connect to Chrome over WebSocket (a remote ``playwright run-server``),
+    and ``download.path()`` throws in that mode, so we can't read the file
+    Playwright already wrote — ``save_as`` is the only way to get the bytes.
+    """
     download_dir = Path(tempfile.mkdtemp())
     try:
         await download.save_as(str(download_dir / "download"))
-        return (download_dir / "download").read_bytes()
+        data = (download_dir / "download").read_bytes()
+        return DownloadedBody(
+            url=download.url,
+            data=data,
+            suggested_filename=download.suggested_filename,
+        )
     except (asyncio.TimeoutError, PlaywrightTimeout):
         logger.warning("Timeout saving download for %s", download.url)
         return None

@@ -63,7 +63,9 @@ async def test_download_body_folded_into_har(storage_tmp):
     capture = await capture_http_archive(
         zip_path,
         PAGE_URL,
-        download=DownloadedBody(url=PAGE_URL, data=pdf_bytes),
+        download=DownloadedBody(
+            url=PAGE_URL, data=pdf_bytes, suggested_filename="doc.pdf"
+        ),
     )
 
     prefix = Path(content_prefix(PAGE_URL))
@@ -79,24 +81,3 @@ async def test_download_body_folded_into_har(storage_tmp):
     assert pdf_entry["size"] == len(pdf_bytes)
     assert pdf_entry["_file"].endswith(".pdf")
     assert (prefix / pdf_entry["_file"]).read_bytes() == pdf_bytes
-
-
-@pytest.mark.asyncio
-async def test_download_without_match_stored_as_orphan(storage_tmp):
-    """When no bodyless entry matches, the bytes are still preserved."""
-    pdf_bytes = b"%PDF-1.7 orphan\n%EOF"
-    manifest = {"log": {"entries": []}}
-
-    zip_path = storage_tmp / "record.zip"
-    with zipfile.ZipFile(zip_path, "w") as archive:
-        archive.writestr("har.har", json.dumps(manifest))
-
-    await capture_http_archive(
-        zip_path,
-        PAGE_URL,
-        download=DownloadedBody(url=PAGE_URL, data=pdf_bytes),
-    )
-
-    prefix = Path(content_prefix(PAGE_URL))
-    orphan = next(prefix.glob("*.pdf"))
-    assert orphan.read_bytes() == pdf_bytes
