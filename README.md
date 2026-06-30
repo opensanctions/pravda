@@ -27,7 +27,7 @@ uv sync
 ## Usage
 
 ```bash
-uv run uvicorn pravda.api:app --reload --env-file .env
+uv run uvicorn pravda.api:app --reload --reload-dir pravda --env-file .env
 ```
 
 ## Storage and access

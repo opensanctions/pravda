@@ -48,7 +48,7 @@ Pravda uses content-addressed storage (filenames of the form `<sha1>.<extension>
 docker compose up -d
 
 # Run the API server
-uv run uvicorn pravda.api:app --reload --env-file .env
+uv run uvicorn pravda.api:app --reload --reload-dir pravda --env-file .env
 
 # Stop all containers
 docker compose down

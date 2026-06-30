@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     logging.basicConfig(
         filename="pravda.log",
-        level=logging.DEBUG,
+        level=logging.INFO,
         format="%(asctime)s %(name)s %(levelname)s %(message)s",
     )
     await init_db()
