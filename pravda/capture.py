@@ -10,7 +10,7 @@ from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import TimeoutError as PlaywrightTimeout
 
 from pravda.db import ConditionType
-from pravda.storage import content_hash, put_blob
+from pravda.storage import cas_name, put_blob
 
 logger = logging.getLogger(__name__)
 
@@ -108,26 +108,27 @@ async def capture_page(
             page, url, condition_type, condition, condition_timeout_ms
         )
 
+        # Defaults shared by every branch; the download branch overrides.
+        downloaded: DownloadedBody | None = None
+        http_status = navigation.http_status
+        final_url = navigation.final_url
+
         if navigation.is_download:
             # The navigation handed off as a download (e.g. a PDF). The body
             # never reaches the renderer, so there is nothing on the page to
             # capture; instead we read the download's bytes for the caller to
-            # fold back into the HAR.
-            downloaded, http_status, final_url = await _capture_download(
-                download_future, url, navigation_status, navigation.final_url
-            )
+            # fold back into the HAR. The status/url come from the response
+            # listener (``goto`` raised before returning) and the download.
+            downloaded = await _recover_download(download_future, url)
+            if downloaded is not None:
+                http_status = navigation_status
+                final_url = downloaded.url
             artifacts = CapturedArtifacts(None, None, None)
-        elif navigation.http_status is None:
-            # Navigation never committed — there is nothing on the page to capture.
-            downloaded = None
-            final_url = navigation.final_url
-            http_status = navigation.http_status
-            artifacts = CapturedArtifacts(None, None, None)
-        else:
-            downloaded = None
-            final_url = navigation.final_url
-            http_status = navigation.http_status
+        elif navigation.http_status is not None:
             artifacts = await _capture_artifacts(page, navigation.final_url)
+        else:
+            # Navigation never committed — there is nothing on the page to capture.
+            artifacts = CapturedArtifacts(None, None, None)
 
         return CaptureResult(
             http_status=http_status,
@@ -189,7 +190,7 @@ async def _navigate(
             final_url=final_url,
             is_download=False,
         )
-    except (PlaywrightTimeout, PlaywrightError, asyncio.TimeoutError) as exception:
+    except (PlaywrightError, asyncio.TimeoutError) as exception:
         # Navigating to a URL that Chrome downloads (e.g. a PDF, once the
         # ``AlwaysOpenPdfExternally`` policy is active) makes ``page.goto``
         # raise "Download is starting" instead of returning a response. The
@@ -295,7 +296,7 @@ async def _capture_one(name: str, callback, url: str, extension: str) -> str | N
         data = await callback()
         if isinstance(data, str):
             data = data.encode()
-        name = f"{content_hash(data)}.{extension}"
+        name = cas_name(data, extension)
         return await put_blob(name, data, url)
     except (asyncio.TimeoutError, PlaywrightTimeout):
         logger.warning("Timeout capturing %s for %s", name, url)
@@ -305,60 +306,35 @@ async def _capture_one(name: str, callback, url: str, extension: str) -> str | N
         return None
 
 
-async def _next_download(
-    download_future: "asyncio.Future[Download]",
-    url: str,
-) -> Download | None:
-    """Wait for the navigation's download event, or log a timeout."""
+async def _recover_download(
+    download_future: "asyncio.Future[Download]", url: str
+) -> DownloadedBody | None:
+    """Recover the bytes of a navigation that handed off as a download.
+
+    The body never reached the renderer (Chrome's viewer swallowed it), so we
+    read it from the ``download`` event instead. Returns ``None`` when the
+    event never fires or yields no bytes.
+
+    We connect to Chrome over WebSocket (a remote ``playwright run-server``),
+    and ``download.path()`` throws in that mode, so we can't read the file
+    Playwright already wrote — ``save_as`` is the only way to get the bytes.
+    """
     try:
-        return await asyncio.wait_for(
+        download = await asyncio.wait_for(
             download_future, timeout=CAPTURE_TIMEOUT_MS / 1000
         )
     except asyncio.TimeoutError:
         logger.warning("Download event did not fire for %s", url)
         return None
 
-
-async def _capture_download(
-    download_future: "asyncio.Future[Download]",
-    url: str,
-    fallback_status: int | None,
-    fallback_url: str | None,
-) -> tuple[DownloadedBody | None, int | None, str | None]:
-    """Recover the bytes of a navigation that handed off as a download.
-
-    Returns ``(download body, http status, final url)``. When the download
-    event never fires (or yields no bytes) there is nothing to report, so the
-    status and url fall back to what navigation itself saw.
-    """
-    download = await _next_download(download_future, url)
-    if download is None:
-        return None, None, fallback_url
-    body = await _read_download(download)
-    if body is None:
-        return None, None, download.url
-    return body, fallback_status, download.url
-
-
-async def _read_download(download: Download) -> DownloadedBody | None:
-    """Materialize a download's bytes via a temp file.
-
-    We connect to Chrome over WebSocket (a remote ``playwright run-server``),
-    and ``download.path()`` throws in that mode, so we can't read the file
-    Playwright already wrote — ``save_as`` is the only way to get the bytes.
-    """
     download_dir = Path(tempfile.mkdtemp())
     try:
         await download.save_as(str(download_dir / "download"))
-        data = (download_dir / "download").read_bytes()
         return DownloadedBody(
             url=download.url,
-            data=data,
+            data=(download_dir / "download").read_bytes(),
             suggested_filename=download.suggested_filename,
         )
-    except (asyncio.TimeoutError, PlaywrightTimeout):
-        logger.warning("Timeout saving download for %s", download.url)
-        return None
     except Exception as exception:
         logger.warning("Failed to save download for %s: %s", download.url, exception)
         return None

@@ -59,12 +59,22 @@ def content_hash(data: bytes) -> str:
     return hashlib.sha1(data).hexdigest()
 
 
+def cas_name(data: bytes, ext: str = "") -> str:
+    """Content-addressed filename for *data*: ``<sha1>.<ext>``.
+
+    The extension follows the same scheme Playwright uses for its HAR
+    resources. A leading dot is stripped and the rest lowercased; an empty
+    extension yields a bare ``<sha1>``.
+    """
+    ext = ext.lstrip(".").lower()
+    return f"{content_hash(data)}.{ext}" if ext else content_hash(data)
+
+
 async def put_blob(name: str, data: bytes, url: str) -> str:
     """Store *data* under the hostname prefix of *url* as *name*.
 
-    *name* is a content-addressed filename (``<sha1>.<extension>``); the
-    caller computes the hash via ``content_hash`` and appends the extension.
-    Returns *name*.
+    *name* is the content-addressed filename (``<sha1>.<extension>``); build
+    it with ``cas_name``. Returns *name*.
     """
     host_dir = content_prefix(url)
     path = os.path.join(host_dir, name)

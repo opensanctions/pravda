@@ -98,8 +98,10 @@ class SnapshotOut(BaseModel):
     `plaintext`, `rendered_html`, and `screenshot` are each null when that
     artifact was not captured (e.g. the page never committed, or the capture
     timed out). The file extension carries the artifact's type (txt, html,
-    png). `http_archive` is the filename of the recorded HAR (``.har``) —
-    metadata only. `http_archive` is null when navigation never committed.
+    png). `http_archive` is the recorded HAR manifest, served inline as JSON;
+    each entry's `response.content._file` names a body resolved as
+    `<prefix>/<filename>`. `http_archive` is null when navigation never
+    committed.
     """
 
     id: uuid.UUID
@@ -147,11 +149,12 @@ class SnapshotOut(BaseModel):
             "Content-addressed filename of the full-page screenshot (``.png``), or null"
         ),
     )
-    http_archive: str | None = Field(
+    http_archive: dict | None = Field(
         default=None,
         description=(
-            "Content-addressed filename of the recorded HAR (``.har``; "
-            "metadata only), or null"
+            "The recorded HAR manifest (inline JSON), or null. Each entry's "
+            "response.content._file names a content-addressed body resolved as "
+            "<prefix>/<filename>."
         ),
     )
 
@@ -254,15 +257,14 @@ async def create_snapshot(
 
             # The HAR is written when the context closes. Unpack it only when
             # navigation committed — otherwise it holds no useful evidence.
-            # Navigation committed, so final_url is set; store the HAR under
-            # it so every artifact shares the one prefix exposed in the
-            # API response.
+            # Bodies are stored under final_url's hostname prefix so every
+            # artifact shares the one prefix exposed in the API response;
+            # the manifest itself is returned to persist inline as JSON.
             http_archive = None
             if result.http_status is not None and http_archive_path.exists():
-                capture = await capture_http_archive(
+                http_archive = await capture_http_archive(
                     http_archive_path, result.final_url, download=result.download
                 )
-                http_archive = capture.http_archive if capture else None
     except PlaywrightError as error:
         # Couldn't even reach the browser — record an empty, failed result.
         logger.error("Browser error for %s: %s", body.url, error.message)
@@ -298,7 +300,7 @@ async def create_snapshot(
 def _build_snapshot(
     body: SnapshotCreate,
     result: CaptureResult,
-    http_archive: str | None,
+    http_archive: dict | None,
 ) -> Snapshot:
     """Map captured evidence onto a persistable ``Snapshot`` row."""
     return Snapshot(

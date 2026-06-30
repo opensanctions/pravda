@@ -60,7 +60,7 @@ async def test_download_body_folded_into_har(storage_tmp):
         archive.writestr("har.har", json.dumps(manifest))
         archive.writestr("abc.html", b"hello")
 
-    capture = await capture_http_archive(
+    manifest = await capture_http_archive(
         zip_path,
         PAGE_URL,
         download=DownloadedBody(
@@ -69,8 +69,7 @@ async def test_download_body_folded_into_har(storage_tmp):
     )
 
     prefix = Path(content_prefix(PAGE_URL))
-    stored = json.loads((prefix / capture.http_archive).read_bytes())
-    entries = stored["log"]["entries"]
+    entries = manifest["log"]["entries"]
 
     # The normal entry is untouched.
     assert entries[0]["response"]["content"]["_file"] == "abc.html"

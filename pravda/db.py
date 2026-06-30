@@ -12,7 +12,7 @@ from sqlalchemy import (
     Text,
     func,
 )
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -54,9 +54,10 @@ class Snapshot(Base):
     plaintext: Mapped[str | None] = mapped_column(Text, nullable=True)
     rendered_html: Mapped[str | None] = mapped_column(Text, nullable=True)
     screenshot: Mapped[str | None] = mapped_column(Text, nullable=True)
-    # Content-addressed filename of the recorded HAR (metadata only; each
-    # entry's ``content._file`` points at a body stored in its own blob).
-    http_archive: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # The recorded HAR manifest, stored inline as JSON. Each entry's
+    # ``response.content._file`` names a body stored as a content-addressed
+    # blob (``<sha1>.<extension>``) under the storage prefix.
+    http_archive: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
 
 async def init_db() -> None:
