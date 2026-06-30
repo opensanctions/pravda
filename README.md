@@ -4,18 +4,20 @@ Pravda is the evidence layer — a service that other services build on. It uses
 
 ## What it does (v0)
 
-- Captures web pages as rendered HTML + plaintext + full-page screenshots
-- Records a HAR of all network activity, with response bodies stored as separate content-addressed blobs
+- Captures rendered HTML, plaintext, and full-page screenshots
+- Records a HAR with response bodies stored as separate content-addressed blobs
+- Recovers bodies Chrome's viewers swallow (e.g. PDFs) by forcing downloads and folding them back into the HAR
 - Tracks URLs and their snapshot history
-- Uses content-addressed storage
-- Runs Chrome (not Chromium) in a virtual framebuffer for realistic rendering
+- Accepts a readiness condition: a lifecycle load state or a CSS selector
+- Stores artifacts on any fsspec filesystem (local, S3, GCS)
+- Runs Chrome (not Chromium) in a virtual framebuffer
 
 ## Setup
 
 Requires [uv](https://docs.astral.sh/uv/) and Docker.
 
 ```bash
-# Start containers (Playwright browser + Postgres)
+# Start containers (Playwright browser + dev and test Postgres)
 docker compose up -d
 
 # Install dependencies
@@ -27,3 +29,7 @@ uv sync
 ```bash
 uv run uvicorn pravda.api:app --reload --env-file .env
 ```
+
+## Storage and access
+
+Artifacts live as `<sha1>.<extension>` files under a per-hostname prefix on any [fsspec](https://filesystem-spec.readthedocs.io/) filesystem (`local`, `s3://`, `gs://`), configured via `STORAGE_BASE_PATH` in `.env`. Snapshot responses return this `prefix` (storage base + normalized hostname) plus content-addressed filenames; downstream services read each artifact directly as `<prefix>/<filename>` from the shared backend. There is no blob download endpoint — Pravda is the evidence capture layer, not a content delivery proxy.

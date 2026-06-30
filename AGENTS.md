@@ -17,6 +17,7 @@ Pravda is the evidence layer — a service that other services build on. It capt
 - Docker container runs **headed** Chrome in a virtual framebuffer (xvfb), exposed via `playwright run-server`. Headed mode avoids headless-detection fingerprinting that some sites use to block scrapers.
 - Launch options (`channel`, `headless`, etc.) are sent from the Python client via the `x-playwright-launch-options` WebSocket header — no custom server JS needed.
 - **Postgres** accessed via **SQLAlchemy** (async) — stores snapshot metadata and the index of recorded response bodies. The schema is created on startup; there are no migrations yet.
+- **fsspec** for content-addressed blob storage on any filesystem (local, S3, GCS). The local FS is wrapped in `AsyncFileSystemWrapper` so writes don't block the event loop; remote backends are natively async. See `pravda/storage.py`.
 
 ## Conventions
 
@@ -32,6 +33,10 @@ Pravda is the evidence layer — a service that other services build on. It capt
 - The user manages git commits, branching, etc.
 - Use full, descriptive variable names. No abbreviations.
 
+## Downloads and PDFs
+
+Chrome's viewer extensions can consume a response stream before it reaches the renderer (the PDF viewer is the main case). The browser image sets the `AlwaysOpenPdfExternally` Chrome policy so these become downloads instead; `capture_page` recovers the bytes via Playwright's `download` event and the API layer folds them back into the matching HAR entry as a `content._file`. So a downloaded body looks like any other — no dedicated PDF field.
+
 ## Storage and access model
 
 Pravda uses content-addressed storage (filenames of the form `<sha1>.<extension>`, where the extension carries the artifact's type). The API returns file paths in snapshot responses — there is no blob download endpoint. Downstream services that share access to the same storage (local volume, S3 bucket, GCS bucket) can read files directly from the returned path. Pravda is the evidence capture layer, not a content delivery proxy.
@@ -39,7 +44,7 @@ Pravda uses content-addressed storage (filenames of the form `<sha1>.<extension>
 ## Running
 
 ```bash
-# Start the browser and database containers
+# Playwright + Postgres
 docker compose up -d
 
 # Run the API server
@@ -48,6 +53,8 @@ uv run uvicorn pravda.api:app --reload --env-file .env
 # Stop all containers
 docker compose down
 ```
+
+`docker-compose.yml` runs two Postgres instances: `postgres_dev` (:5432, used by the API) and `postgres_test` (:5433, used by the test suite). Both start together so a fresh checkout is ready for either.
 
 ## Adding dependencies
 

@@ -1,7 +1,7 @@
 [project]
 name = "pravda"
 version = "0.1.0"
-description = "Evidence layer: MHTML archives and screenshots of web pages"
+description = "Evidence layer: durable evidence capture of web pages (HAR, screenshots, rendered HTML, plaintext)"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
