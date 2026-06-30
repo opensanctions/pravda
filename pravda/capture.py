@@ -108,10 +108,12 @@ async def capture_page(
             page, url, condition_type, condition, condition_timeout_ms
         )
 
-        # Defaults shared by every branch; the download branch overrides.
+        # Defaults; the download branch overrides status/url, the
+        # committed-navigation branch overrides the artifacts.
         downloaded: DownloadedBody | None = None
         http_status = navigation.http_status
         final_url = navigation.final_url
+        plaintext = rendered_html = screenshot = None
 
         if navigation.is_download:
             # The navigation handed off as a download (e.g. a PDF). The body
@@ -123,21 +125,20 @@ async def capture_page(
             if downloaded is not None:
                 http_status = navigation_status
                 final_url = downloaded.url
-            artifacts = CapturedArtifacts(None, None, None)
         elif navigation.http_status is not None:
-            artifacts = await _capture_artifacts(page, navigation.final_url)
-        else:
-            # Navigation never committed — there is nothing on the page to capture.
-            artifacts = CapturedArtifacts(None, None, None)
+            plaintext, rendered_html, screenshot = await _capture_artifacts(
+                page, navigation.final_url
+            )
+        # else: navigation never committed — nothing on the page to capture.
 
         return CaptureResult(
             http_status=http_status,
             error=navigation.error,
             condition_met=navigation.condition_met,
             final_url=final_url,
-            plaintext=artifacts.plaintext,
-            rendered_html=artifacts.rendered_html,
-            screenshot=artifacts.screenshot,
+            plaintext=plaintext,
+            rendered_html=rendered_html,
+            screenshot=screenshot,
             download=downloaded,
         )
     finally:
@@ -226,25 +227,18 @@ async def _navigate(
         )
 
 
-@dataclass
-class CapturedArtifacts:
-    """Filenames of the three per-page captured artifacts.
-
-    Each is a content address ``<sha1>.<extension>``; the extension
-    (txt/html/png) carries the artifact's type.
-    """
-
-    plaintext: str | None
-    rendered_html: str | None
-    screenshot: str | None
-
-
-async def _capture_artifacts(page: Page, url: str) -> CapturedArtifacts:
+async def _capture_artifacts(
+    page: Page, url: str
+) -> tuple[str | None, str | None, str | None]:
     """Stop any pending requests, then capture the three artifacts.
 
     Stopping the page first forces it into a terminal, capturable state —
     otherwise the screenshot could stall on resources that never arrive.
     This mirrors hitting the browser's stop button.
+
+    Returns ``(plaintext, rendered_html, screenshot)`` filenames, each a
+    content address ``<sha1>.<extension>`` whose extension carries its type;
+    any individual capture that fails is ``None``.
     """
     cdp = await page.context.new_cdp_session(page)
     await cdp.send("Page.stopLoading", {})
@@ -283,11 +277,7 @@ async def _capture_artifacts(page: Page, url: str) -> CapturedArtifacts:
         "png",
     )
 
-    return CapturedArtifacts(
-        plaintext=plaintext,
-        rendered_html=rendered_html,
-        screenshot=screenshot,
-    )
+    return plaintext, rendered_html, screenshot
 
 
 async def _capture_one(name: str, callback, url: str, extension: str) -> str | None:
