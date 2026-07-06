@@ -18,7 +18,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from pravda.capture import CaptureResult, capture_page
-from pravda.db import ConditionType, Snapshot, get_session, init_db
+from pravda.db import ConditionType, Snapshot, get_session
 from pravda.http_archive import capture_http_archive
 from pravda.storage import content_prefix
 
@@ -35,8 +35,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         level=logging.INFO,
         format="%(asctime)s %(name)s %(levelname)s %(message)s",
     )
-    await init_db()
-    logger.info("Database initialized")
     yield
 
 

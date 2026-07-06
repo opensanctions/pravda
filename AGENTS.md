@@ -16,7 +16,7 @@ Pravda is the evidence layer — a service that other services build on. It capt
 - **Playwright** (Python) connecting over WebSocket to a Docker container.
 - Docker container runs **headed** Chrome in a virtual framebuffer (xvfb), exposed via `playwright run-server`. Headed mode avoids headless-detection fingerprinting that some sites use to block scrapers.
 - Launch options (`channel`, `headless`, etc.) are sent from the Python client via the `x-playwright-launch-options` WebSocket header — no custom server JS needed.
-- **Postgres** accessed via **SQLAlchemy** (async) — stores snapshot metadata and the index of recorded response bodies. The schema is created on startup; there are no migrations yet.
+- **Postgres** accessed via **SQLAlchemy** (async) — stores snapshot metadata and the index of recorded response bodies. Schema changes are managed with **Alembic** migrations (see [Database migrations](#database-migrations)); the app does not create the schema on startup.
 - **fsspec** for content-addressed blob storage on any filesystem (local, S3, GCS). The local FS is wrapped in `AsyncFileSystemWrapper` so writes don't block the event loop; remote backends are natively async. See `pravda/storage.py`.
 
 ## Conventions
@@ -56,6 +56,22 @@ docker compose down
 
 `docker-compose.yml` runs two Postgres instances: `postgres_dev` (:5432, used by the API) and `postgres_test` (:5433, used by the test suite). Both start together so a fresh checkout is ready for either.
 
+The compose `db_migrate` service runs `alembic upgrade head` and the `api` service waits for it to finish, so `docker compose up` applies pending migrations before the app boots. (The `db_migrate` and `api` services override `DATABASE_URL` to the `postgres_dev` service hostname; `.env` keeps `localhost` for running uvicorn on the host.)
+
+## Database migrations
+
+Alembic manages the schema. The migration env (`alembic/env.py`) reuses the async engine from `pravda.db` and `Base.metadata` for autogenerate.
+
+```bash
+# Apply pending migrations to the dev database
+uv run --env-file .env alembic upgrade head
+
+# After changing models in pravda/db.py, generate a migration
+uv run --env-file .env alembic revision --autogenerate -m "describe the change"
+```
+
+Review the generated file under `alembic/versions/` (autogenerate is a starting point, not always correct). When a migration creates a `postgresql.ENUM`, manage the type explicitly in both `upgrade` and `downgrade` so the round-trip stays clean (see the initial migration). The test suite does not run migrations — `tests/conftest.py` builds the schema with `Base.metadata.create_all`.
+
 ## Adding dependencies
 
 ```bash
@@ -66,7 +82,7 @@ uv add <package>
 
 Test behavior, not implementation. If renaming an internal function breaks a test, the test is wrong.
 
-- **Real database.** Each test runs inside a transaction that rolls back after. Tests are isolated, fast, and leave no residue.
+- **Real database.** Each test runs inside a transaction that rolls back after. Tests are isolated, fast, and leave no residue. The schema is built with `Base.metadata.create_all` in `tests/conftest.py` (not via Alembic) so tests stay independent of the migration history.
 - **No real network.** Use Playwright's `page.route()` to serve fixture content from `tests/fixtures/`. Deterministic, offline-friendly.
 - **Don't mock internals.** Mock at the boundary only: tmp dirs for storage, route interception for the browser. If you feel the urge to mock something inside a module, the module probably needs a cleaner seam.
 - **Keep it minimal.** Few, meaningful tests that cover the actual workflow. No tests for getters, no tests that just assert a mock was called.

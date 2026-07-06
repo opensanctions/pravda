@@ -30,6 +30,22 @@ uv sync
 uv run uvicorn pravda.api:app --reload --reload-dir pravda --env-file .env
 ```
 
+## Database migrations
+
+The schema is managed with [Alembic](https://alembic.sqlalchemy.org/). Apply migrations before running the app against a fresh database:
+
+```bash
+uv run --env-file .env alembic upgrade head
+```
+
+After changing the models in `pravda/db.py`, generate a migration and review it:
+
+```bash
+uv run --env-file .env alembic revision --autogenerate -m "describe the change"
+```
+
+In Docker, the `db_migrate` service runs `alembic upgrade head` and the `api` service waits for it, so `docker compose up` applies pending migrations automatically.
+
 ## Storage and access
 
 Artifacts live as `<sha1>.<extension>` files under a per-hostname prefix on any [fsspec](https://filesystem-spec.readthedocs.io/) filesystem (`local`, `s3://`, `gs://`), configured via `STORAGE_BASE_PATH` in `.env`. Snapshot responses return this `prefix` (storage base + normalized hostname) plus content-addressed filenames; downstream services read each artifact directly as `<prefix>/<filename>` from the shared backend. There is no blob download endpoint — Pravda is the evidence capture layer, not a content delivery proxy.

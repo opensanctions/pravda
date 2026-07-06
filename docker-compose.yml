@@ -2,10 +2,30 @@ services:
   api:
     build: .
     env_file: .env
+    # Inside the compose network the DB is reached by service name, not
+    # localhost (which would be the api container itself).
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://pravda:pravda@postgres_dev:5432/pravda_dev
     ports:
       - "8000:8000"
     depends_on:
-      - postgres_dev
+      postgres_dev:
+        condition: service_healthy
+      db_migrate:
+        condition: service_completed_successfully
+
+  # One-shot: applies pending migrations (``alembic upgrade head``) then
+  # exits. ``api`` waits for it to finish successfully before booting, so a
+  # fresh ``docker compose up`` brings the schema up before the app starts.
+  db_migrate:
+    build: .
+    env_file: .env
+    command: alembic upgrade head
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://pravda:pravda@postgres_dev:5432/pravda_dev
+    depends_on:
+      postgres_dev:
+        condition: service_healthy
 
   playwright:
     build:
@@ -24,6 +44,11 @@ services:
       - pgdata_dev:/var/lib/postgresql
     ports:
       - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pravda"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   postgres_test:
     image: postgres:18
