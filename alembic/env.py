@@ -1,17 +1,21 @@
 """Alembic migration environment.
 
-Reuses the async engine from :mod:`pravda.db` (asyncpg) and the declarative
-``Base.metadata`` so autogenerate sees the current models. Runs online only;
+Builds a one-shot async engine (asyncpg) from ``DATABASE_URL`` for each run,
+runs the migrations, and disposes it on the same event loop. ``Base.metadata``
+is imported from the app so autogenerate sees the current models. Online only;
 there is no offline SQL generation.
 """
 
 import asyncio
+import os
 from logging.config import fileConfig
 
+from sqlalchemy import pool
 from sqlalchemy.engine import Connection
+from sqlalchemy.ext.asyncio import create_async_engine
 
 from alembic import context
-from pravda.db import Base, engine
+from pravda.db import Base
 
 # this is the Alembic Config object, which provides access to .ini values.
 config = context.config
@@ -31,8 +35,12 @@ def do_run_migrations(connection: Connection) -> None:
 
 
 async def run_async_migrations() -> None:
-    async with engine.connect() as connection:
+    connectable = create_async_engine(
+        os.environ["DATABASE_URL"], poolclass=pool.NullPool
+    )
+    async with connectable.connect() as connection:
         await connection.run_sync(do_run_migrations)
+    await connectable.dispose()
 
 
 def run_migrations_online() -> None:
