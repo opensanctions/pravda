@@ -5,6 +5,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
+from bs4 import BeautifulSoup
 from playwright.async_api import Download, Page
 from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import TimeoutError as PlaywrightTimeout
@@ -236,6 +237,16 @@ async def _capture_artifacts(
     otherwise the screenshot could stall on resources that never arrive.
     This mirrors hitting the browser's stop button.
 
+    ``plaintext`` is derived from the rendered HTML (via BeautifulSoup's
+    ``get_text``) rather than the browser's ``innerText``. ``innerText`` is
+    visible-only: it drops text inside ``display: none``, collapsed tabs,
+    zero-size elements, and any JS-injected node CSS hides — content that
+    nonetheless lands in ``rendered_html``. Extracting from the serialized
+    DOM captures every text node, so plaintext reflects all the content the
+    page has to offer (the same approach poliloom uses). Its content hash is
+    therefore a reliable signal for whether a page's text changed and a
+    downstream extraction needs re-running.
+
     Returns ``(plaintext, rendered_html, screenshot)`` filenames, each a
     content address ``<sha1>.<extension>`` whose extension carries its type;
     any individual capture that fails is ``None``.
@@ -243,18 +254,31 @@ async def _capture_artifacts(
     cdp = await page.context.new_cdp_session(page)
     await cdp.send("Page.stopLoading", {})
 
-    plaintext = await _capture_one(
-        "plaintext",
-        lambda: page.inner_text("body", timeout=CAPTURE_TIMEOUT_MS),
-        url,
-        "txt",
-    )
-    rendered_html = await _capture_one(
-        "rendered_html",
-        lambda: page.content(),
-        url,
-        "html",
-    )
+    # Capture the rendered DOM, then derive plaintext from the same source so
+    # both carry the full DOM text — including JS-injected nodes hidden by
+    # CSS, which the browser's visible-only innerText drops.
+    try:
+        html = await page.content()
+    except (asyncio.TimeoutError, PlaywrightTimeout):
+        logger.warning("Timeout capturing rendered_html for %s", url)
+        html = None
+    except Exception as exception:
+        logger.warning("Failed to capture rendered_html for %s: %s", url, exception)
+        html = None
+
+    rendered_html = plaintext = None
+    if html is not None:
+        html_blob = html.encode()
+        rendered_html = await put_blob(cas_name(html_blob, "html"), html_blob, url)
+        # Plaintext: every text node of the rendered DOM via get_text
+        # (visible or not), whitespace collapsed so the hash tracks real
+        # text changes — see the docstring for why this beats innerText.
+        text = " ".join(
+            BeautifulSoup(html, "html.parser").get_text(separator=" ").split()
+        )
+        text_blob = text.encode()
+        plaintext = await put_blob(cas_name(text_blob, "txt"), text_blob, url)
+
     # Use clip to constrain the screenshot width to the viewport width.
     # CSS approaches (max-width on html/body, overflow-x: hidden, etc.) don't
     # work because Playwright measures scrollWidth, which reports the full
@@ -284,10 +308,9 @@ async def _capture_one(name: str, callback, url: str, extension: str) -> str | N
     """Capture one artifact via *callback* and store the blob."""
     try:
         data = await callback()
-        if isinstance(data, str):
-            data = data.encode()
-        name = cas_name(data, extension)
-        return await put_blob(name, data, url)
+        blob = data.encode() if isinstance(data, str) else data
+        filename = cas_name(blob, extension)
+        return await put_blob(filename, blob, url)
     except (asyncio.TimeoutError, PlaywrightTimeout):
         logger.warning("Timeout capturing %s for %s", name, url)
         return None
