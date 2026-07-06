@@ -47,7 +47,7 @@ async def capture_http_archive(
             await _inject_download(manifest, download, url)
 
         for entry in manifest["log"]["entries"]:
-            file_name = entry.get("response", {}).get("content", {}).get("_file")
+            file_name = entry["response"]["content"].get("_file")
             # The download body (if any) was stored by ``_inject_download``;
             # it is not part of the zip, so skip it here.
             if not file_name or file_name not in recorded:

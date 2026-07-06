@@ -79,10 +79,6 @@ async def put_blob(name: str, data: bytes, url: str) -> str:
     host_dir = content_prefix(url)
     path = os.path.join(host_dir, name)
 
-    if await fs._exists(path):
-        logger.debug("Blob already exists: %s", name)
-        return name
-
     await fs._makedirs(host_dir, exist_ok=True)
     await fs._pipe_file(path, data)
 

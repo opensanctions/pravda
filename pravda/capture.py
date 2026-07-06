@@ -262,7 +262,7 @@ async def _capture_artifacts(
     except (asyncio.TimeoutError, PlaywrightTimeout):
         logger.warning("Timeout capturing rendered_html for %s", url)
         html = None
-    except Exception as exception:
+    except PlaywrightError as exception:
         logger.warning("Failed to capture rendered_html for %s: %s", url, exception)
         html = None
 
@@ -314,7 +314,7 @@ async def _capture_one(name: str, callback, url: str, extension: str) -> str | N
     except (asyncio.TimeoutError, PlaywrightTimeout):
         logger.warning("Timeout capturing %s for %s", name, url)
         return None
-    except Exception as exception:
+    except PlaywrightError as exception:
         logger.warning("Failed to capture %s for %s: %s", name, url, exception)
         return None
 
@@ -348,7 +348,7 @@ async def _recover_download(
             data=(download_dir / "download").read_bytes(),
             suggested_filename=download.suggested_filename,
         )
-    except Exception as exception:
+    except PlaywrightError as exception:
         logger.warning("Failed to save download for %s: %s", download.url, exception)
         return None
     finally:
