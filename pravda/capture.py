@@ -73,8 +73,9 @@ async def capture_page(page: Page, url: str) -> CaptureResult:
     response), then wait for the normal ``load`` state. Reading the status at
     commit — *before* the load wait — means a load timeout still records the
     HTTP response and any partial page evidence. This is an implementation
-    detail of the one-shot path, not public configuration; callers needing
-    anything else drive the real Playwright page through ``browser()``.
+    detail of the default (no-``drive``) path, not public configuration;
+    callers needing anything else pass a ``drive`` callback to
+    :func:`pravda.snapshot` and use Playwright directly on the recording page.
 
     The network archive (a HAR recording) is not captured here — it is bound
     to the browser context's lifecycle, so the caller (which owns the
@@ -328,9 +329,9 @@ async def capture_current(
 ) -> CaptureResult:
     """Capture evidence from the page's *current* state, without navigating.
 
-    The interactive counterpart to :func:`capture_page`: the caller has
-    already navigated to and interacted with *page* (a ``browser()``
-    session). This captures the page-content artifacts (HTML/plaintext/
+    Used by the ``drive`` path of :func:`pravda.snapshot`: the caller has
+    already navigated to and interacted with *page* via a ``drive`` callback.
+    This captures the page-content artifacts (HTML/plaintext/
     screenshot) from the current DOM, records the main-document status the
     session observed (``navigation_status``) and the current URL
     (``final_url``), and — when a download fired during the session — recovers
@@ -370,10 +371,10 @@ async def _recover_download(
     """Wait for the download event of a navigation that handed off as a
     download, then save its bytes.
 
-    Used by the one-shot path, where ``page.goto`` itself becomes a download
-    (e.g. a PDF) and the event arrives asynchronously. The interactive path
-    resolves its download event itself and calls :func:`_save_download`
-    directly.
+    Used by the default (no-``drive``) path, where ``page.goto`` itself
+    becomes a download (e.g. a PDF) and the event arrives asynchronously. The
+    ``drive`` path resolves its download event itself and reaches
+    :func:`_save_download` through :func:`capture_current`.
     """
     try:
         async with asyncio.timeout(DOWNLOAD_TIMEOUT_S):

@@ -23,10 +23,9 @@ Pravda is the evidence layer — a Python library that other services build on. 
 
 Exported from `pravda`:
 
-- `snapshot(url)` — one-shot capture: connect to the remote browser, navigate (waiting for the normal `load` state), capture evidence, process the HAR, and persist. The whole pipeline runs under a wall-clock breaker; browser/navigation/timeout failures are still persisted as `Snapshot` rows with `error` set and no evidence.
-- `browser()` — an async context manager yielding a `BrowserSession` that owns the driver/connection/recording context/one page. The caller drives `session.page` with **real Playwright** (selectors, load states, clicks, form fills) for custom readiness; `await session.snapshot()` (terminal) captures and persists.
+- `snapshot(url, *, drive=None)` — capture and persist. Without `drive` it is the default (one-shot) path: connect to the remote browser, navigate (waiting for the normal `load` state), capture evidence, process the HAR, and persist. With `drive(page, url)` the caller pilots the recording page itself with **real Playwright** (selectors, load states, clicks, form fills) and **owns the initial navigation**; Pravda still owns the browser connection, the HAR, capture, persistence, and cleanup, and captures whatever state `drive` leaves behind. The whole pipeline runs under a wall-clock breaker; browser/navigation/timeout failures — including Playwright errors/timeouts raised from `drive` — are still persisted as `Snapshot` rows with `error` set and no evidence. An arbitrary (non-Playwright) exception raised by `drive` propagates and persists nothing.
 - `snapshots(url)` — history query returning every exact-URL match newest first. No pagination.
-- `Snapshot` — the immutable public value (a frozen dataclass). `PravdaError` — misuse of a terminal session.
+- `Snapshot` — the immutable public value (a frozen dataclass).
 
 Pravda owns its database sessions: every attempt (success, partial, or failure) is committed through `pravda.db.async_session` and returned as a public `Snapshot`. Callers need no database wiring.
 

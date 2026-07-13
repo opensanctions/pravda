@@ -1,9 +1,10 @@
-"""Direct library tests for the one-shot and interactive capture paths.
+"""Direct library tests for the unified ``snapshot`` capture path.
 
-These exercise ``pravda.snapshot`` and ``pravda.browser()`` end to end against
-the real browser server and test database. Routed pages serve fixture content
-without real network access; each test's database commits are rolled back and
-its artifacts land in a temporary store.
+These exercise ``pravda.snapshot`` end to end against the real browser server
+and test database: the default (no ``drive``) one-shot path and the ``drive``
+callback path where the caller pilots the recording page. Routed pages serve
+fixture content without real network access; each test's database commits are
+rolled back and its artifacts land in a temporary store.
 """
 
 from pathlib import Path
@@ -36,7 +37,8 @@ def _fulfill_pdf(route):
 
 @pytest.mark.asyncio
 async def test_snapshot_persists_failed_attempt():
-    """A one-shot capture of an unreachable URL persists a failed Snapshot row.
+    """A default (no ``drive``) capture of an unreachable URL persists a failed
+    Snapshot row.
 
     Drives the full pipeline (connect, context, navigate, finalize, persist)
     against the real browser and test database. Nothing listens on the local
@@ -60,41 +62,109 @@ async def test_snapshot_persists_failed_attempt():
 
 
 @pytest.mark.asyncio
-async def test_interactive_capture_after_navigation():
-    """An interactive browser() session captures and persists the page the
-    caller navigated to, including the recorded HAR."""
-    async with pravda.browser() as session:
-        page = session.page
-        await page.route("https://example.com", _fulfill_html)
-        await page.goto("https://example.com", wait_until="load")
+async def test_snapshot_drive_navigates_and_captures():
+    """A drive callback that routes and navigates leaves Pravda to capture and
+    persist the resulting page, including the recorded HAR.
 
-        snapshot = await session.snapshot()
+    The callback owns navigation (complete control, including the initial
+    goto); Pravda captures whatever state it leaves behind. The recorded url
+    is the subject the caller asked to capture; final_url is where the page
+    landed.
+    """
 
-    assert snapshot.url == "https://example.com/"
+    async def drive(page, url):
+        await page.route(url, _fulfill_html)
+        await page.goto(url, wait_until="load")
+
+    snapshot = await pravda.snapshot("https://example.com", drive=drive)
+
+    assert snapshot.url == "https://example.com"
+    # goto normalizes to a trailing slash; final_url reflects that landing.
     assert snapshot.final_url == "https://example.com/"
     assert snapshot.http_status == 200
     assert snapshot.error is None
     assert snapshot.rendered_html.endswith(".html")
     assert snapshot.plaintext.endswith(".txt")
     assert snapshot.http_archive is not None
+    # The captured plaintext is the fixture's content.
+    text = (Path(snapshot.prefix) / snapshot.plaintext).read_text()
+    assert "Hello from Pravda" in text
+
+    # Committed through Pravda's own session — visible to snapshots().
+    history = await snapshots("https://example.com")
+    assert any(item.id == snapshot.id for item in history)
 
 
 @pytest.mark.asyncio
-async def test_interactive_download_uses_download_url_and_skips_blank_page():
-    """A navigation that hands off to a download records the download's URL and
-    skips the meaningless about:blank artifacts, matching the one-shot PDF
-    path."""
-    async with pravda.browser() as session:
-        page = session.page
-        await page.route("https://example.com/doc.pdf", _fulfill_pdf)
+async def test_snapshot_drive_interaction_and_readiness_captured():
+    """A drive callback's interactions and readiness checks are part of the
+    captured evidence.
+
+    The callback routes a page whose button appends a node via JS, clicks it,
+    and waits for the new selector (readiness) before returning. The snapshot's
+    plaintext reflects the post-click DOM — proving callback-controlled
+    interaction, not just navigation, was captured.
+    """
+    page_html = """
+    <!DOCTYPE html>
+    <html><body>
+      <h1>Before interaction</h1>
+      <button id="reveal">Reveal</button>
+      <script>
+        document.getElementById('reveal').addEventListener('click', () => {
+          const node = document.createElement('p');
+          node.id = 'secret';
+          node.textContent = 'After interaction secret';
+          document.body.appendChild(node);
+        });
+      </script>
+    </body></html>
+    """
+
+    async def drive(page, url):
+        await page.route(
+            url,
+            lambda route: route.fulfill(
+                body=page_html, headers={"content-type": "text/html"}
+            ),
+        )
+        await page.goto(url, wait_until="load")
+        await page.click("#reveal")
+        await page.wait_for_selector("#secret")
+
+    snapshot = await pravda.snapshot("https://example.com", drive=drive)
+
+    assert snapshot.http_status == 200
+    assert snapshot.error is None
+    assert snapshot.plaintext.endswith(".txt")
+    # The post-click DOM (appended by the callback's interaction) was captured.
+    text = (Path(snapshot.prefix) / snapshot.plaintext).read_text()
+    assert "Before interaction" in text
+    assert "After interaction secret" in text
+
+
+@pytest.mark.asyncio
+async def test_snapshot_drive_download_uses_download_url_and_skips_blank_page():
+    """A drive callback that navigates to a PDF (handed off to Chrome's
+    downloader) records the download's URL and skips the meaningless
+    about:blank artifacts, matching the default PDF path.
+
+    The callback owns the goto and catches the ``Download is starting`` error
+    it raises; Pravda observes the response status and the download event, then
+    recovers and folds the bytes back into the recorded HAR.
+    """
+
+    async def drive(page, url):
+        await page.route(url, _fulfill_pdf)
         # goto hands off to Chrome's downloader and raises "Download is
-        # starting"; the session observes the response status and download.
+        # starting"; the drive-capture observer records the response status
+        # and the download.
         try:
-            await page.goto("https://example.com/doc.pdf", wait_until="commit")
+            await page.goto(url, wait_until="commit")
         except PlaywrightError:
             pass
 
-        snapshot = await session.snapshot()
+    snapshot = await pravda.snapshot("https://example.com/doc.pdf", drive=drive)
 
     assert snapshot.url == "https://example.com/doc.pdf"
     assert snapshot.final_url == "https://example.com/doc.pdf"
@@ -109,35 +179,53 @@ async def test_interactive_download_uses_download_url_and_skips_blank_page():
 
 
 @pytest.mark.asyncio
-async def test_interactive_snapshot_is_terminal():
-    """After snapshot(), .page and a second snapshot() raise PravdaError, and
-    exiting the context manager afterwards is safe (idempotent cleanup)."""
-    async with pravda.browser() as session:
-        page = session.page
-        await page.route("https://example.com", _fulfill_html)
-        await page.goto("https://example.com")
-        first = await session.snapshot()
+async def test_snapshot_drive_playwright_error_persists_failed_attempt():
+    """A Playwright error raised from the drive callback follows snapshot's
+    established failed-attempt persistence: a Snapshot row with the error and
+    no evidence (the navigation failed fast against a closed local port)."""
 
-        # .page is gone once the session is terminal.
-        with pytest.raises(pravda.PravdaError):
-            _ = session.page
-        # A second snapshot() is refused.
-        with pytest.raises(pravda.PravdaError):
-            await session.snapshot()
+    async def drive(page, url):
+        # Nothing listens here, so goto fails fast with a Playwright error.
+        await page.goto(url)
 
-    # Exiting the context after a terminal snapshot does not raise.
-    assert first.http_status == 200
+    snapshot = await pravda.snapshot("https://localhost:39999/", drive=drive)
+
+    assert snapshot.url == "https://localhost:39999/"
+    assert snapshot.http_status is None
+    assert snapshot.error is not None
+    assert snapshot.final_url is None
+    assert snapshot.plaintext is None
+    assert snapshot.rendered_html is None
+    assert snapshot.screenshot is None
+    assert snapshot.http_archive is None
+
+    history = await snapshots("https://localhost:39999/")
+    assert any(item.id == snapshot.id for item in history)
 
 
 @pytest.mark.asyncio
-async def test_interactive_snapshot_before_navigation_errors_and_persists_nothing():
-    """Calling snapshot() before any navigation raises PravdaError and persists
-    nothing — no bogus about:blank "success" row."""
-    async with pravda.browser() as session:
-        _ = session.page  # a page exists, but it was never navigated
+async def test_snapshot_drive_requires_navigation():
+    async def drive(page, url):
+        pass
 
-        with pytest.raises(pravda.PravdaError, match="before any navigation"):
-            await session.snapshot()
+    with pytest.raises(ValueError, match="before navigating"):
+        await pravda.snapshot("https://example.com", drive=drive)
 
-    # Nothing was persisted.
-    assert await snapshots("about:blank") == []
+    assert await snapshots("https://example.com") == []
+
+
+@pytest.mark.asyncio
+async def test_snapshot_drive_arbitrary_error_propagates_and_persists_nothing():
+    """A non-Playwright exception raised by the drive callback is not turned
+    into a snapshot failure: it propagates to the caller and persists nothing."""
+
+    async def drive(page, url):
+        await page.route(url, _fulfill_html)
+        await page.goto(url, wait_until="load")
+        raise ValueError("caller bug")
+
+    with pytest.raises(ValueError, match="caller bug"):
+        await pravda.snapshot("https://example.com", drive=drive)
+
+    # Nothing was persisted — the exception escaped before persistence.
+    assert await snapshots("https://example.com") == []

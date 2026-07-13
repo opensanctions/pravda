@@ -47,28 +47,30 @@ Import the public API from `pravda`:
 import pravda
 ```
 
-### One-shot snapshot
+### Snapshot
 
-Capture a page with the library's default readiness (navigate, then wait for the normal `load` state) and persist it:
+`pravda.snapshot(url)` is the single entry point. Pravda owns the whole capture: it connects to the remote browser, opens an isolated recording context (a HAR), captures the evidence, flushes and processes the archive, persists the `Snapshot` row through its own database session, and cleans up — all under a wall-clock timeout so a wedged stage becomes a bounded, persisted failure rather than a silent hang.
+
+**Default capture.** With no `drive` argument, Pravda navigates to `url` and waits for the normal `load` state, then captures:
 
 ```python
 snapshot = await pravda.snapshot("https://example.com")
 print(snapshot.id, snapshot.http_status, snapshot.rendered_html)
 ```
 
-### Interactive session
-
-When you need custom readiness — selectors, clicks, form fills, or a specific load state — drive the real Playwright page yourself, then call the terminal `snapshot()`:
+**Custom capture with `drive`.** When you need custom readiness or interaction — selectors, clicks, form fills, a specific load state, login flows — pass a `drive(page, url)` callback. The callback **owns the initial navigation and every interaction**, using real Playwright on the recording `page`. Pravda still owns the browser connection, the HAR, the capture, persistence, and cleanup, and captures whatever state the callback leaves behind:
 
 ```python
-async with pravda.browser() as browser:
-    page = browser.page
-    await page.goto("https://example.com", wait_until="commit")
+async def drive(page, url):
+    await page.goto(url, wait_until="commit")
     await page.wait_for_selector(".results")
-    snapshot = await browser.snapshot()
+
+snapshot = await pravda.snapshot("https://example.com", drive=drive)
 ```
 
-`browser.page` is a real `playwright.async_api.Page`; everything Playwright can do is available. `browser.snapshot()` is **terminal**: it captures the current page state, closes the recording context to flush the HAR, and persists the evidence. After it returns the session is terminal — `.page` and further `snapshot()` calls raise `pravda.PravdaError`. Open a new `pravda.browser()` session to capture again.
+`page` is a real `playwright.async_api.Page`; everything Playwright can do is available inside `drive`. If a navigation hands off to a download (e.g. a PDF), `page.goto(...)` raises `Download is starting` — catch it inside `drive` and Pravda recovers the download bytes and folds them back into the HAR, just as the default path does.
+
+A Playwright error or timeout raised from `drive` is persisted as a failed `Snapshot` (error set, no evidence), like any other capture failure; an arbitrary (non-Playwright) exception raised by `drive` propagates to the caller and persists nothing.
 
 ### History
 

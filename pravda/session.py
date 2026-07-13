@@ -1,30 +1,27 @@
-"""Browser capture orchestration: one-shot ``snapshot()`` and interactive
-``browser()``.
+"""Browser capture orchestration: ``snapshot()``.
 
 This module owns the Playwright driver, the remote browser connection, the
 isolated recording context, and the database persistence of a capture. The
 page-level evidence extraction (navigate, wait, screenshot/HTML/text, download
-recovery) lives in :mod:`pravda.capture`; here we wire those pieces into two
-public entry points:
+recovery) lives in :mod:`pravda.capture`; here we wire those pieces into a
+single public entry point:
 
-* :func:`snapshot` — the one-shot path. Connect, set up a recording context,
-  capture, finalize, persist. The whole pipeline runs under a wall-clock
-  breaker so a wedged stage becomes a bounded, persisted failure.
+* :func:`snapshot` — connect, set up a recording context, capture, finalize,
+  persist, all under a wall-clock breaker so a wedged stage becomes a bounded,
+  persisted failure. Without ``drive`` it is the one-shot path (navigate to the
+  normal ``load`` state); with ``drive`` the caller pilots the recording page
+  itself — owning the initial navigation and any readiness or interaction it
+  needs — and Pravda captures whatever state it leaves behind.
 
-* :func:`browser` — an async context manager yielding a :class:`BrowserSession`
-  that owns the driver/connection/context/page and observes navigation status
-  and downloads. The caller drives ``session.page`` freely — using Playwright
-  directly for selectors, load states, clicks, form fills — and calls
-  ``session.snapshot()`` (terminal) to capture and persist.
-
-There is no readiness-condition abstraction. The one-shot path uses a fixed
-internal default (navigate to commit, then wait for the normal ``load``
-state); callers needing anything else drive the real Playwright page through
-``browser()``. All configuration is read from the environment
-(``BROWSER_WS_URL``, ``DATABASE_URL``, ``STORAGE_BASE_PATH``); there are no
-constructor overrides. Pravda owns its database sessions: every attempt
-(success, partial, or failure) is committed through :func:`pravda.db.async_session`
-and returned as a public :class:`~pravda.snapshots.Snapshot`.
+There is no readiness-condition abstraction. The default (no ``drive``) is a
+fixed internal readiness (navigate to commit, then wait for the normal
+``load`` state); callers needing anything else pass a ``drive`` callback and
+use Playwright directly on the recording page. All configuration is read from
+the environment (``BROWSER_WS_URL``, ``DATABASE_URL``,
+``STORAGE_BASE_PATH``); there are no constructor overrides. Pravda owns its
+database sessions: every attempt (success, partial, or failure) is committed
+through :func:`pravda.db.async_session` and returned as a public
+:class:`~pravda.snapshots.Snapshot`.
 """
 
 import asyncio
@@ -34,6 +31,7 @@ import os
 import shutil
 import tempfile
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import replace
 from pathlib import Path
 
@@ -72,7 +70,7 @@ CONNECT_TIMEOUT_MS = 10_000
 
 # Combined budget for browser.new_context() + context.new_page(). Both reach
 # the remote server over a pipe; bounding them catches a wedge before a page
-# even exists. Used by both the one-shot setup and BrowserSession.__aenter__.
+# even exists.
 SETUP_TIMEOUT_S = 10
 
 # Budget for unpacking the HAR zip and storing every recorded body, as one
@@ -83,8 +81,7 @@ HAR_PROCESSING_TIMEOUT_S = 20
 
 # Budget for BrowserContext.close(), which flushes the HAR zip. close() has no
 # Playwright timeout argument; bounding it preserves the page evidence already
-# captured and discards an incomplete HAR instead of hanging. Also bounds the
-# cleanup-path close in BrowserSession._close().
+# captured and discards an incomplete HAR instead of hanging.
 CONTEXT_CLOSE_TIMEOUT_S = 10
 
 # Budget for the forced browser.close() cleanup that runs after capture is
@@ -93,19 +90,10 @@ CONTEXT_CLOSE_TIMEOUT_S = 10
 # operational warning only and never alters the finalized snapshot.
 BROWSER_CLOSE_TIMEOUT_S = 5
 
-# Budget to wait for a download event when an interactive navigation handed off
-# to Chrome's downloader (the page settles at about:blank before the event
-# fires). Matches the one-shot download-recovery window.
+# Budget to wait for a download event when a navigation handed off to Chrome's
+# downloader (the page settles at about:blank before the event fires). Matches
+# the one-shot download-recovery window.
 DOWNLOAD_TIMEOUT_S = 15
-
-
-class PravdaError(Exception):
-    """A capture session was used in an unsupported way.
-
-    Raised when a terminal :class:`BrowserSession` is used again (a second
-    ``snapshot()`` call, ``.page`` access after the session closed, or
-    ``snapshot()`` before any navigation).
-    """
 
 
 def _launch_options_header() -> dict[str, str]:
@@ -275,19 +263,114 @@ async def _persist_snapshot(
     return from_record(record)
 
 
-async def snapshot(url: str) -> Snapshot:
-    """Capture a one-shot snapshot of *url* and persist it.
+# An async callback that pilots a freshly created recording page: it owns
+# every navigation and interaction (selectors, load states, clicks, form
+# fills), using Playwright directly. Passed to :func:`snapshot` as ``drive``.
+DriveCallback = Callable[[Page, str], Awaitable[None]]
 
-    Connect to the remote browser, set up an isolated context recording a HAR,
-    navigate (waiting for the normal ``load`` state), capture the page
-    evidence, flush and process the HAR, then commit the result.
+
+async def _drive_capture(page: Page, url: str, drive: DriveCallback) -> CaptureResult:
+    """Run the caller's *drive* callback against *page*, then capture the
+    resulting current page state.
+
+    The latest main-frame document response and the first download are
+    observed for the duration of the callback so :func:`capture_current` can
+    record them. The callback owns every navigation and interaction —
+    including catching a ``Download is starting`` error from a PDF-like
+    navigation so the download can be recovered, just as the default path does
+    internally.
+
+    A navigation that handed off to Chrome's downloader (e.g. a PDF) leaves
+    the page at ``about:blank``; if the download event has not fired by the
+    time the callback returns it is awaited (bounded) so the download becomes
+    the captured subject. Returns the evidence as a ``CaptureResult``; the
+    caller finalizes and persists.
+
+    A Playwright error or timeout raised by *drive* propagates to the failure
+    handling in :func:`snapshot` (persisted as a failed attempt); any other
+    exception raised by *drive* propagates to the caller untouched once the
+    listeners are removed.
+    """
+    navigation_status: int | None = None
+    download: Download | None = None
+    loop = asyncio.get_running_loop()
+    download_future: asyncio.Future[Download] = loop.create_future()
+    main_frame = page.main_frame
+
+    def on_download(received: Download) -> None:
+        nonlocal download
+        if download is None:
+            download = received
+        if not download_future.done():
+            download_future.set_result(received)
+
+    def on_response(response) -> None:
+        nonlocal navigation_status
+        if response.request.is_navigation_request() and response.frame is main_frame:
+            navigation_status = response.status
+
+    page.on("download", on_download)
+    page.on("response", on_response)
+    try:
+        await drive(page, url)
+
+        if page.url == "about:blank" and navigation_status is None and download is None:
+            raise ValueError(
+                "drive returned before navigating the page; "
+                "call page.goto(...) before returning"
+            )
+
+        # A navigation that handed off to Chrome's downloader (e.g. a PDF)
+        # leaves the page at about:blank; the download event may follow the
+        # callback's return. Keep the listener installed while awaiting it so
+        # the download becomes the captured subject.
+        if download is None and page.url == "about:blank":
+            try:
+                async with asyncio.timeout(DOWNLOAD_TIMEOUT_S):
+                    download = await download_future
+            except asyncio.TimeoutError:
+                logger.warning("Download event did not fire for %s", url)
+
+        final_url = download.url if download is not None else page.url
+        return await capture_current(page, final_url, navigation_status, download)
+    finally:
+        page.remove_listener("download", on_download)
+        page.remove_listener("response", on_response)
+
+
+async def snapshot(url: str, *, drive: DriveCallback | None = None) -> Snapshot:
+    """Capture a snapshot of *url* and persist it.
+
+    Without *drive* this is the one-shot path: connect to the remote browser,
+    set up an isolated context recording a HAR, navigate (waiting for the
+    normal ``load`` state), capture the page evidence, flush and process the
+    HAR, then commit the result.
+
+    With *drive*, Pravda still owns the browser connection, the recording
+    context, the page, and persistence — but the caller drives the page.
+    Pravda creates the recording page, hands it (and *url*) to
+    ``await drive(page, url)``, then captures the resulting current page
+    state. The callback has complete control, including the initial
+    navigation and any readiness or interaction it needs (selectors, load
+    states, clicks, form fills); use Playwright directly on *page*. A
+    navigation that hands off to a download (e.g. a PDF) is recovered too:
+    ``goto`` raises ``Download is starting``, so catch it inside *drive* and
+    Pravda observes the download event and captures the bytes, as the default
+    path does internally.
 
     The whole pipeline runs under a wall-clock breaker so a wedged stage
-    becomes a bounded failure. Browser/navigation/timeout failures are still
+    becomes a bounded failure. Browser/navigation/timeout failures —
+    including Playwright errors and timeouts raised from *drive* — are still
     persisted as :class:`~pravda.snapshots.Snapshot` rows (with ``error`` set
     and no evidence); a database failure that prevents the commit propagates.
+    An arbitrary (non-Playwright, non-timeout) exception raised by *drive* is
+    not turned into a snapshot failure: Pravda cleans up and re-raises it to
+    the caller.
 
-    Returns the public :class:`~pravda.snapshots.Snapshot` for the attempt.
+    The recorded ``url`` is *url* (the subject the caller asked to capture);
+    ``final_url`` reflects where the page actually landed (``page.url``, or
+    the download URL when a download was captured). Returns the public
+    :class:`~pravda.snapshots.Snapshot` for the attempt.
     """
     logger.info("Capturing %s", url)
 
@@ -320,10 +403,11 @@ async def snapshot(url: str) -> Snapshot:
             try:
                 # Whole-pipeline wall-clock breaker. Inner stages carry their
                 # own tighter bounds (connect, setup, context.close, HAR);
-                # capture_page bounds the page interactions internally. This
-                # outer budget is the breaker of last resort for a stage that
-                # eludes its inner bound (notably page capture), converting a
-                # silent hang into a bounded failure.
+                # capture_page bounds the one-shot page interactions internally,
+                # while a ``drive`` callback is bounded by this outer budget.
+                # It is also the breaker of last resort for a stage that eludes
+                # its inner bound (notably page capture), converting a silent
+                # hang into a bounded failure.
                 async with asyncio.timeout(SNAPSHOT_TIMEOUT_S):
                     stage_start = time.monotonic()
                     browser = await _connect(playwright)
@@ -350,7 +434,10 @@ async def snapshot(url: str) -> Snapshot:
                     stages["setup"] = time.monotonic() - stage_start
 
                     stage_start = time.monotonic()
-                    result = await capture_page(page, url)
+                    if drive is None:
+                        result = await capture_page(page, url)
+                    else:
+                        result = await _drive_capture(page, url, drive)
                     stages["capture"] = time.monotonic() - stage_start
 
                     # Close the context (flushing the HAR) and unpack the
@@ -410,295 +497,3 @@ async def snapshot(url: str) -> Snapshot:
         shutil.rmtree(http_archive_dir, ignore_errors=True)
 
     return await _persist_snapshot(url, result, http_archive, stages)
-
-
-class BrowserSession:
-    """An interactive capture session owning a Playwright driver, a remote
-    browser connection, an isolated browser context recording a HAR, and one
-    real :class:`~playwright.async_api.Page`.
-
-    Construct one with :func:`browser` and drive it as an async context
-    manager::
-
-        async with pravda.browser() as session:
-            page = session.page
-            await page.goto("https://example.com", wait_until="commit")
-            await page.wait_for_selector(".results")
-            snapshot = await session.snapshot()
-
-    The caller drives readiness directly through Playwright (selectors, load
-    states, clicks, form fills). Navigation status and downloads are observed
-    for the whole session, so a single session may span multiple navigations;
-    only the latest main-frame navigation is recorded (iframe document
-    responses are excluded). :meth:`snapshot` is **terminal**: it captures the
-    current page state, closes the context to flush the HAR, processes and
-    persists the evidence through Pravda's own database session, and returns
-    the public frozen :class:`~pravda.snapshots.Snapshot`. After it returns the
-    session is terminal — ``.page`` and further ``snapshot()`` calls raise
-    :class:`PravdaError`. Browser and driver cleanup completes when the context
-    manager exits; that cleanup is safe and idempotent.
-
-    All hidden state lives on the session object; there is no global
-    page-to-session registry.
-    """
-
-    def __init__(self) -> None:
-        self._playwright = None
-        self._browser: Browser | None = None
-        self._context: BrowserContext | None = None
-        self._page: Page | None = None
-        self._main_frame = None
-        self._http_archive_dir: Path | None = None
-        self._http_archive_path: Path | None = None
-        self._terminal = False
-        # Observed session state, populated by the listeners installed in
-        # _open() and read by snapshot().
-        self._navigation_status: int | None = None
-        self._download: Download | None = None
-        self._download_future: asyncio.Future[Download] | None = None
-        self._on_download = None
-        self._on_response = None
-
-    @property
-    def page(self) -> Page:
-        """The live Playwright page to drive.
-
-        Raises :class:`PravdaError` once the session is terminal (after
-        :meth:`snapshot` has captured and closed the context).
-        """
-        if self._terminal:
-            raise PravdaError(
-                "BrowserSession is terminal (snapshot() was called); "
-                "open a new browser() session to capture again."
-            )
-        if self._page is None:
-            raise PravdaError("BrowserSession has no page (not entered).")
-        return self._page
-
-    async def __aenter__(self) -> "BrowserSession":
-        await self._open()
-        return self
-
-    async def __aexit__(self, exc_type, exc, tb) -> None:
-        await self._close()
-
-    async def _open(self) -> None:
-        """Start the driver, connect, build the recording context/page, and
-        install observation. On any failure, tear down what was opened and
-        re-raise — the caller's ``async with`` never yields a half-built
-        session."""
-        self._playwright = await async_playwright().start()
-        try:
-            self._browser = await _connect(self._playwright)
-            self._http_archive_dir = Path(tempfile.mkdtemp())
-            self._http_archive_path = self._http_archive_dir / "record.zip"
-            async with asyncio.timeout(SETUP_TIMEOUT_S):
-                self._context = await self._browser.new_context(
-                    record_har_path=str(self._http_archive_path),
-                    record_har_content="attach",
-                )
-                self._page = await self._context.new_page()
-                self._main_frame = self._page.main_frame
-            self._install_observers()
-        except BaseException:
-            await self._close()
-            raise
-
-    def _install_observers(self) -> None:
-        """Watch the latest main-frame navigation response and any download.
-
-        Only main-frame navigations count: ``response.frame is main_frame``
-        excludes iframe document responses, so the recorded status reflects
-        the page the caller actually drove. The first download of the session
-        is kept (later ones are ignored) and also resolves the download future
-        so :meth:`snapshot` can await a navigation that handed off to Chrome's
-        downloader (e.g. a PDF) before its event fires.
-        """
-        loop = asyncio.get_running_loop()
-        self._download_future = loop.create_future()
-
-        def on_download(download) -> None:
-            if self._download is None:
-                self._download = download
-            future = self._download_future
-            if future is not None and not future.done():
-                future.set_result(download)
-
-        def on_response(response) -> None:
-            if (
-                response.request.is_navigation_request()
-                and response.frame is self._main_frame
-            ):
-                self._navigation_status = response.status
-
-        self._on_download = on_download
-        self._on_response = on_response
-        page = self._page
-        page.on("download", on_download)
-        page.on("response", on_response)
-
-    async def snapshot(self) -> Snapshot:
-        """Terminal capture: freeze the current page state and persist it.
-
-        Captures the page-content artifacts from the current DOM (or recovers
-        a download's bytes when the navigation handed off to Chrome's
-        downloader), closes the context to flush the HAR, processes and
-        persists the evidence through Pravda's own database session, and
-        returns the public :class:`~pravda.snapshots.Snapshot`.
-
-        The recorded URL is the page's current URL (``page.url``) — the caller
-        drove every navigation, so that is the honest subject of the evidence.
-        When a download fired, the download's URL is used instead and the
-        blank page's artifacts are skipped, matching the one-shot PDF path.
-
-        Raises :class:`PravdaError` if called before any navigation (the page
-        is still ``about:blank`` — there is no meaningful evidence to capture)
-        or after the session is already terminal. After a successful return the
-        session is terminal; ``.page`` and further ``snapshot()`` calls raise.
-        Exiting the context manager afterwards is safe (cleanup is bounded and
-        idempotent).
-        """
-        if self._terminal:
-            raise PravdaError(
-                "BrowserSession.snapshot() was already called; the session is "
-                "terminal. Open a new browser() session to capture again."
-            )
-        # Refuse to capture a page that was never navigated: it is still at
-        # about:blank and would persist as bogus "successful" evidence. A
-        # download also counts as a navigation (its response arrives via the
-        # listener before the goto that handed off raises), so the download
-        # path is allowed through. Checked before terminalizing so no capture
-        # or persistence runs.
-        if self._navigation_status is None and self._download is None:
-            raise PravdaError(
-                "BrowserSession.snapshot() called before any navigation; "
-                "navigate the page (e.g. await page.goto(...)) before capturing."
-            )
-
-        page = self._page
-        context = self._context
-        if page is None or context is None:
-            raise PravdaError("BrowserSession has no page (not entered).")
-
-        download = self._download
-        # If the main frame is at about:blank despite an observed navigation,
-        # the navigation handed off to Chrome's downloader (e.g. a PDF) and the
-        # download event may not have fired yet — await it so the download is
-        # the captured subject (matching the one-shot PDF path).
-        if download is None and page.url == "about:blank":
-            download = await self._await_download()
-        final_url = download.url if download is not None else page.url
-
-        self._terminal = True
-        stages: dict[str, float] = {}
-        stage_start = time.monotonic()
-        result = await capture_current(
-            page, final_url, self._navigation_status, download
-        )
-        stages["capture"] = time.monotonic() - stage_start
-
-        result, http_archive = await _finalize_capture(
-            context,
-            result,
-            self._http_archive_path,
-            final_url,
-            stages,
-        )
-
-        return await _persist_snapshot(final_url, result, http_archive, stages)
-
-    async def _await_download(self) -> Download | None:
-        """Wait for the download event of a navigation that handed off as a
-        download.
-
-        Used by :meth:`snapshot` when the main frame is at ``about:blank``:
-        the navigation response already arrived (so the status is known) but
-        the download event follows. Returns the download or ``None`` on
-        timeout.
-        """
-        future = self._download_future
-        if future is None:
-            return None
-        try:
-            async with asyncio.timeout(DOWNLOAD_TIMEOUT_S):
-                return await future
-        except asyncio.TimeoutError:
-            page_url = self._page.url if self._page is not None else "?"
-            logger.warning("Download event did not fire for %s", page_url)
-            return None
-
-    async def _close(self) -> None:
-        """Tear down the session. Idempotent and safe after a terminal
-        :meth:`snapshot`: every step is guarded and nulls what it tears down,
-        so a second call (e.g. ``__aexit__`` after a successful snapshot, or
-        after ``_open`` failed and cleaned up) is a no-op.
-
-        The context is closed whenever one is still held. A terminal
-        snapshot's :func:`_finalize_capture` already closed it; the redundant
-        close raises (caught below) — both paths end with the context released,
-        so cleanup is robust even if capture/finalization/persistence raised.
-        """
-        page = self._page
-        if page is not None:
-            if self._on_download is not None:
-                try:
-                    page.remove_listener("download", self._on_download)
-                except PlaywrightError:
-                    pass
-                self._on_download = None
-            if self._on_response is not None:
-                try:
-                    page.remove_listener("response", self._on_response)
-                except PlaywrightError:
-                    pass
-                self._on_response = None
-        self._page = None
-        self._main_frame = None
-
-        context = self._context
-        if context is not None:
-            try:
-                async with asyncio.timeout(CONTEXT_CLOSE_TIMEOUT_S):
-                    await context.close()
-            except asyncio.TimeoutError:
-                logger.warning(
-                    "context.close exceeded %ss budget during cleanup; abandoning",
-                    CONTEXT_CLOSE_TIMEOUT_S,
-                )
-            except PlaywrightError as error:
-                # Already closed by snapshot()'s _finalize_capture — expected
-                # on the terminal path; other failures are operational only.
-                logger.debug("context.close during cleanup: %s", error.message)
-            self._context = None
-
-        browser = self._browser
-        if browser is not None:
-            await _close_browser(browser)
-            self._browser = None
-
-        playwright = self._playwright
-        if playwright is not None:
-            try:
-                await playwright.stop()
-            except PlaywrightError as error:
-                logger.warning("playwright driver stop failed: %s", error.message)
-            self._playwright = None
-
-        if self._http_archive_dir is not None:
-            shutil.rmtree(self._http_archive_dir, ignore_errors=True)
-            self._http_archive_dir = None
-            self._http_archive_path = None
-
-
-def browser() -> BrowserSession:
-    """Return an async context manager owning an interactive capture session.
-
-    The session owns the Playwright driver, the remote browser connection, an
-    isolated browser context recording a HAR, and one real page (``.page``).
-    The caller drives the page directly through Playwright; call
-    ``.snapshot()`` (terminal) to capture and persist the current state.
-
-    All configuration comes from the environment (``BROWSER_WS_URL``,
-    ``DATABASE_URL``, ``STORAGE_BASE_PATH``); there are no overrides.
-    """
-    return BrowserSession()
