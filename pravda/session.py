@@ -8,7 +8,7 @@ single public entry point:
 
 * :func:`snapshot` — connect, set up a recording context, capture, finalize,
   persist, all under a wall-clock breaker so a wedged stage becomes a bounded,
-  persisted failure. Without ``drive`` it is the one-shot path (navigate to the
+  persisted failure. Without ``drive`` it uses the default behavior (navigate to the
   normal ``load`` state); with ``drive`` the caller pilots the recording page
   itself — owning the initial navigation and any readiness or interaction it
   needs — and Pravda captures whatever state it leaves behind.
@@ -54,7 +54,7 @@ logger = logging.getLogger(__name__)
 BROWSER_CHANNEL = "chrome"
 BROWSER_WS_URL = os.environ["BROWSER_WS_URL"]
 
-# Wall-clock budget for the whole one-shot pipeline (connect -> setup ->
+# Wall-clock budget for the whole capture pipeline (connect -> setup ->
 # capture -> context.close -> HAR). capture_page bounds the page interactions
 # internally, and the stages below add tighter inner bounds for the calls
 # that reach the remote browser server over a pipe. This outer budget is the
@@ -92,7 +92,7 @@ BROWSER_CLOSE_TIMEOUT_S = 5
 
 # Budget to wait for a download event when a navigation handed off to Chrome's
 # downloader (the page settles at about:blank before the event fires). Matches
-# the one-shot download-recovery window.
+# the default download-recovery window.
 DOWNLOAD_TIMEOUT_S = 15
 
 
@@ -341,7 +341,7 @@ async def _drive_capture(page: Page, url: str, drive: DriveCallback) -> CaptureR
 async def snapshot(url: str, *, drive: DriveCallback | None = None) -> Snapshot:
     """Capture a snapshot of *url* and persist it.
 
-    Without *drive* this is the one-shot path: connect to the remote browser,
+    Without *drive* this is the default behavior: connect to the remote browser,
     set up an isolated context recording a HAR, navigate (waiting for the
     normal ``load`` state), capture the page evidence, flush and process the
     HAR, then commit the result.
@@ -403,7 +403,7 @@ async def snapshot(url: str, *, drive: DriveCallback | None = None) -> Snapshot:
             try:
                 # Whole-pipeline wall-clock breaker. Inner stages carry their
                 # own tighter bounds (connect, setup, context.close, HAR);
-                # capture_page bounds the one-shot page interactions internally,
+                # capture_page bounds the default page interactions internally,
                 # while a ``drive`` callback is bounded by this outer budget.
                 # It is also the breaker of last resort for a stage that eludes
                 # its inner bound (notably page capture), converting a silent

@@ -1,7 +1,7 @@
 """Direct library tests for the unified ``snapshot`` capture path.
 
 These exercise ``pravda.snapshot`` end to end against the real browser server
-and test database: the default (no ``drive``) one-shot path and the ``drive``
+and test database: the default (no ``drive``) behavior and the ``drive``
 callback path where the caller pilots the recording page. Routed pages serve
 fixture content without real network access; each test's database commits are
 rolled back and its artifacts land in a temporary store.

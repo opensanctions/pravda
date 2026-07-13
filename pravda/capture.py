@@ -340,7 +340,7 @@ async def capture_current(
     A download (e.g. a PDF the navigation handed off to) leaves the page at
     ``about:blank`` with nothing meaningful to render, so the page-content
     artifacts are skipped and only the download bytes are captured — matching
-    the one-shot PDF path. Returns the evidence as a ``CaptureResult``;
+    the default PDF path. Returns the evidence as a ``CaptureResult``;
     storing it is the caller's job — this function never touches the database.
     """
     downloaded: DownloadedBody | None = None
