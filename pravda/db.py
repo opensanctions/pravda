@@ -29,7 +29,15 @@ class Base(DeclarativeBase):
     pass
 
 
-class Snapshot(Base):
+class SnapshotRecord(Base):
+    """A persisted snapshot row (the ``snapshot`` table).
+
+    This is the SQLAlchemy ORM mapping — a storage detail. The public,
+    immutable domain value is ``pravda.snapshots.Snapshot``; ``from_record``
+    converts a row into one. The table name and schema are unchanged by the
+    Python rename.
+    """
+
     __tablename__ = "snapshot"
 
     id: Mapped[uuid.UUID] = mapped_column(

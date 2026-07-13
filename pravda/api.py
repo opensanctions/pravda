@@ -21,9 +21,9 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from pravda.capture import CaptureResult, capture_page
-from pravda.db import ConditionType, Snapshot, get_session
+from pravda.db import ConditionType, SnapshotRecord, get_session
 from pravda.http_archive import capture_http_archive
-from pravda.storage import content_prefix
+from pravda.snapshots import Snapshot, from_record
 
 BROWSER_CHANNEL = "chrome"
 BROWSER_WS_URL = os.environ["BROWSER_WS_URL"]
@@ -213,20 +213,24 @@ async def list_snapshots(
     page: int = Query(1, ge=1, description="Page number (1-indexed)"),
     session: AsyncSession = Depends(get_session),
 ) -> SnapshotsOut:
-    total_stmt = select(func.count()).select_from(Snapshot).where(Snapshot.url == url)
+    total_stmt = (
+        select(func.count())
+        .select_from(SnapshotRecord)
+        .where(SnapshotRecord.url == url)
+    )
     total = (await session.execute(total_stmt)).scalar_one()
 
     rows_stmt = (
-        select(Snapshot)
-        .where(Snapshot.url == url)
-        .order_by(Snapshot.captured_at.desc())
+        select(SnapshotRecord)
+        .where(SnapshotRecord.url == url)
+        .order_by(SnapshotRecord.captured_at.desc())
         .offset((page - 1) * PAGE_SIZE)
         .limit(PAGE_SIZE)
     )
     rows = (await session.execute(rows_stmt)).scalars().all()
 
     return SnapshotsOut(
-        items=[_snapshot_out(row) for row in rows],
+        items=[_snapshot_out(from_record(row)) for row in rows],
         total=total,
     )
 
@@ -242,7 +246,7 @@ def _snapshot_out(snapshot: Snapshot) -> SnapshotOut:
         condition_type=snapshot.condition_type,
         condition=snapshot.condition,
         condition_met=snapshot.condition_met,
-        prefix=content_prefix(snapshot.final_url) if snapshot.final_url else None,
+        prefix=snapshot.prefix,
         plaintext=snapshot.plaintext,
         rendered_html=snapshot.rendered_html,
         screenshot=snapshot.screenshot,
@@ -415,7 +419,7 @@ async def create_snapshot(
         snapshot.error,
         " ".join(f"{name}={duration:.2f}s" for name, duration in stages.items()),
     )
-    return _snapshot_out(snapshot)
+    return _snapshot_out(from_record(snapshot))
 
 
 async def _finalize_capture(
@@ -522,9 +526,9 @@ def _build_snapshot(
     body: SnapshotCreate,
     result: CaptureResult,
     http_archive: dict | None,
-) -> Snapshot:
-    """Map captured evidence onto a persistable ``Snapshot`` row."""
-    return Snapshot(
+) -> SnapshotRecord:
+    """Map captured evidence onto a persistable ``SnapshotRecord`` row."""
+    return SnapshotRecord(
         url=str(body.url),
         final_url=result.final_url,
         http_status=result.http_status,

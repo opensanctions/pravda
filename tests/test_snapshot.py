@@ -10,7 +10,7 @@ import pravda.capture as capture_module
 import pravda.storage as storage
 from pravda.api import SnapshotCreate, _build_snapshot
 from pravda.capture import CaptureResult, capture_page
-from pravda.db import Snapshot
+from pravda.db import SnapshotRecord
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -190,7 +190,9 @@ async def test_captured_evidence_persists(db_session):
     await db_session.flush()
 
     loaded = (
-        await db_session.execute(select(Snapshot).where(Snapshot.id == snapshot.id))
+        await db_session.execute(
+            select(SnapshotRecord).where(SnapshotRecord.id == snapshot.id)
+        )
     ).scalar_one()
 
     assert loaded.url == "https://example.com/"
