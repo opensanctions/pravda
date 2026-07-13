@@ -10,13 +10,14 @@ caller can persist it inline (as JSON) in the database and serve it straight
 from the API.
 """
 
+import asyncio
 import json
 import logging
 import zipfile
 from pathlib import Path
 
 from pravda.capture import DownloadedBody
-from pravda.storage import cas_name, put_blob
+from pravda.storage import STORAGE_WRITE_TIMEOUT_S, cas_name, put_blob
 
 logger = logging.getLogger(__name__)
 
@@ -57,15 +58,22 @@ async def capture_http_archive(
     return manifest
 
 
-async def _store_body(download: DownloadedBody, url: str) -> str:
+async def _store_body(download: DownloadedBody, url: str) -> str | None:
     """Store a download's bytes as a ``<sha1>.<ext>`` blob, return its name.
 
     The extension comes from ``download.suggested_filename`` — the name Chrome
-    itself chose for the download.
+    itself chose for the download. Returns ``None`` when the write exceeds its
+    budget, so the caller can leave the matching HAR entry bodyless instead of
+    dropping the whole archive.
     """
     ext = Path(download.suggested_filename).suffix
     name = cas_name(download.data, ext)
-    await put_blob(name, download.data, url)
+    try:
+        async with asyncio.timeout(STORAGE_WRITE_TIMEOUT_S):
+            await put_blob(name, download.data, url)
+    except asyncio.TimeoutError:
+        logger.warning("Timeout storing download body for %s", download.url)
+        return None
     return name
 
 
@@ -75,7 +83,8 @@ async def _inject_download(manifest: dict, download: DownloadedBody, url: str) -
     Finds the bodyless entry whose request URL matches the download (the one
     Chrome's viewer swallowed), stores the bytes as a ``<sha1>.<ext>`` blob,
     and points the entry's ``content._file`` at it — exactly as if Playwright
-    had recorded the body itself.
+    had recorded the body itself. Leaves the entry bodyless when the store
+    fails, so the rest of the archive survives.
     """
     for entry in manifest["log"]["entries"]:
         if entry["request"]["url"] != download.url:
@@ -85,6 +94,8 @@ async def _inject_download(manifest: dict, download: DownloadedBody, url: str) -
             # This entry already has a body; keep looking for the bodyless one.
             continue
         name = await _store_body(download, url)
+        if name is None:
+            return
         content["_file"] = name
         content["size"] = len(download.data)
         return

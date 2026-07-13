@@ -4,6 +4,7 @@ import logging
 import os
 import shutil
 import tempfile
+import time
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -26,21 +27,30 @@ from pravda.storage import content_prefix
 BROWSER_CHANNEL = "chrome"
 BROWSER_WS_URL = os.environ["BROWSER_WS_URL"]
 
-# Wall-clock budget for an entire snapshot. capture_page bounds the page
-# interactions internally (nav/condition/screenshot), but the calls around
-# it — connect, new_context, new_page, context.close — talk to the remote
-# browser server over a pipe and have NO timeout of their own. If that
-# server wedges, one of them hangs forever with no exception and the request
-# never responds. This budget turns that silent hang into a bounded
-# TimeoutError. Set generously over capture_page's own worst case plus
-# connection overhead, so it only ever fires on a genuine hang, never
-# mid-capture.
-SNAPSHOT_TIMEOUT_S = 120
+# Wall-clock budget for the whole snapshot pipeline (connect → setup →
+# capture → context.close → HAR). capture_page bounds the page interactions
+# internally, and the stages below add tighter inner bounds for the calls
+# that reach the remote browser server over a pipe. This outer budget is the
+# breaker of last resort: it catches an unbounded stage wedging — notably
+# context.close, which has no dedicated timeout yet (a later change will
+# refine its failure semantics and preserve partial evidence).
+SNAPSHOT_TIMEOUT_S = 75
 
-# Timeout for establishing the connection to the browser server. Playwright
-# defaults connect's timeout to 0 (no timeout); setting it makes a dead server
-# fail fast as a PlaywrightError instead of waiting for the wall-clock budget.
-CONNECT_TIMEOUT_MS = 30_000
+# Timeout for the handshake with the remote browser server (connect + launch).
+# Playwright defaults connect's timeout to 0 (no timeout); bounding it makes a
+# dead server fail fast as a PlaywrightError instead of waiting on the
+# wall-clock budget.
+CONNECT_TIMEOUT_MS = 10_000
+
+# Combined budget for browser.new_context() + context.new_page(). Both reach
+# the remote server over a pipe; bounding them catches a wedge before a page
+# even exists.
+SETUP_TIMEOUT_S = 10
+
+# Budget for unpacking the HAR zip and storing every recorded body, as one
+# stage. Individual normal-artifact writes (rendered HTML, plaintext,
+# screenshot, downloaded file) are bounded separately inside capture_page.
+HAR_PROCESSING_TIMEOUT_S = 20
 
 logger = logging.getLogger(__name__)
 
@@ -240,15 +250,16 @@ async def create_snapshot(
         body.condition,
     )
     http_archive_dir = Path(tempfile.mkdtemp())
+    stages: dict[str, float] = {}
+    timeout_error: str | None = None
     try:
         async with async_playwright() as playwright:
-            # Bound the whole capture in wall-clock time. capture_page bounds
-            # the page interactions, but connect / new_context / new_page /
-            # context.close talk to the remote browser server over a pipe and
-            # have no timeout of their own — if that server wedges, one of
-            # them hangs forever with no exception and the request never
-            # responds. This converts that silent hang into a bounded
-            # TimeoutError (handled below like any other failure).
+            # The whole pipeline runs under a wall-clock breaker. The stages
+            # below carry their own tighter bounds (connect, setup, HAR);
+            # capture_page bounds the page interactions internally. This outer
+            # budget is the breaker of last resort for the unbounded stages —
+            # page capture and (for now) context.close — converting a silent
+            # hang into a bounded TimeoutError handled below like any failure.
             #
             # async_playwright() is the *outer* context manager deliberately:
             # its teardown just kills the local driver subprocess, which is
@@ -256,6 +267,7 @@ async def create_snapshot(
             # outside the timeout scope means the teardown runs after the
             # timeout resolves the cancellation, so cleanup can't itself hang.
             async with asyncio.timeout(SNAPSHOT_TIMEOUT_S):
+                stage_start = time.monotonic()
                 browser = await playwright.chromium.connect(
                     BROWSER_WS_URL,
                     # connect's timeout defaults to 0 (no timeout). Bound the
@@ -268,25 +280,43 @@ async def create_snapshot(
                         ),
                     },
                 )
+                stages["connect"] = time.monotonic() - stage_start
+
                 # Record a HAR of all network activity, with response bodies
                 # stored as separate entries inside a zip archive
                 # (record_har_content="attach" + a .zip path). The file is
                 # flushed when the context closes.
                 http_archive_path = http_archive_dir / "record.zip"
-                context = await browser.new_context(
-                    record_har_path=str(http_archive_path),
-                    record_har_content="attach",
-                )
-                page = await context.new_page()
+                stage_start = time.monotonic()
+                try:
+                    async with asyncio.timeout(SETUP_TIMEOUT_S):
+                        context = await browser.new_context(
+                            record_har_path=str(http_archive_path),
+                            record_har_content="attach",
+                        )
+                        page = await context.new_page()
+                except asyncio.TimeoutError:
+                    timeout_error = (
+                        f"context/page setup exceeded {SETUP_TIMEOUT_S}s budget"
+                    )
+                    raise
+                stages["setup"] = time.monotonic() - stage_start
 
+                stage_start = time.monotonic()
                 result = await capture_page(
                     page,
                     str(body.url),
                     condition_type=body.condition_type,
                     condition=body.condition,
                 )
+                stages["capture"] = time.monotonic() - stage_start
 
+                # No dedicated timeout around context.close() yet — it relies
+                # on the outer SNAPSHOT_TIMEOUT_S breaker. A later change will
+                # refine close-failure semantics and preserve partial evidence.
+                stage_start = time.monotonic()
                 await context.close()
+                stages["close"] = time.monotonic() - stage_start
 
                 # The HAR is written when the context closes. Unpack it only
                 # when navigation committed — otherwise it holds no useful
@@ -296,11 +326,21 @@ async def create_snapshot(
                 # inline as JSON.
                 http_archive = None
                 if result.http_status is not None and http_archive_path.exists():
-                    http_archive = await capture_http_archive(
-                        http_archive_path,
-                        result.final_url,
-                        download=result.download,
-                    )
+                    stage_start = time.monotonic()
+                    try:
+                        async with asyncio.timeout(HAR_PROCESSING_TIMEOUT_S):
+                            http_archive = await capture_http_archive(
+                                http_archive_path,
+                                result.final_url,
+                                download=result.download,
+                            )
+                    except asyncio.TimeoutError:
+                        timeout_error = (
+                            f"HAR processing exceeded "
+                            f"{HAR_PROCESSING_TIMEOUT_S}s budget"
+                        )
+                        raise
+                    stages["har"] = time.monotonic() - stage_start
     except PlaywrightError as error:
         # Couldn't even reach the browser — record an empty, failed result.
         logger.error("Browser error for %s: %s", body.url, error.message)
@@ -316,15 +356,18 @@ async def create_snapshot(
         )
         http_archive = None
     except asyncio.TimeoutError:
-        # The capture exceeded its wall-clock budget — almost always a wedged
-        # remote browser server. Return a failed result the same way the
-        # PlaywrightError branch does, so the caller always gets an answer.
-        logger.error(
-            "Snapshot timed out after %ss for %s", SNAPSHOT_TIMEOUT_S, body.url
+        # A stage (or the whole pipeline) exceeded its budget. timeout_error
+        # names the inner stage when one fired; otherwise the outer breaker
+        # tripped on an unbounded stage (page capture, context.close). Either
+        # way the caller gets a failed result with no evidence preserved — a
+        # later change will refine close-timeout partial-evidence handling.
+        message = timeout_error or (
+            f"snapshot exceeded {SNAPSHOT_TIMEOUT_S}s wall-clock budget"
         )
+        logger.error("%s for %s", message, body.url)
         result = CaptureResult(
             http_status=None,
-            error=f"snapshot exceeded {SNAPSHOT_TIMEOUT_S}s wall-clock budget",
+            error=message,
             condition_met=False,
             final_url=None,
             plaintext=None,
@@ -338,15 +381,19 @@ async def create_snapshot(
 
     snapshot = _build_snapshot(body, result, http_archive)
     session.add(snapshot)
+    stage_start = time.monotonic()
     await session.commit()
+    stages["commit"] = time.monotonic() - stage_start
     logger.info(
-        "Captured %s id=%s: status=%s condition_met=%s http_archive=%s error=%s",
+        "Captured %s id=%s: status=%s condition_met=%s http_archive=%s error=%s "
+        "timings=%s",
         snapshot.url,
         snapshot.id,
         snapshot.http_status,
         snapshot.condition_met,
         snapshot.http_archive is not None,
         snapshot.error,
+        " ".join(f"{name}={duration:.2f}s" for name, duration in stages.items()),
     )
     return _snapshot_out(snapshot)
 

@@ -6,6 +6,8 @@ from playwright.async_api import Browser
 from playwright.async_api import TimeoutError as PlaywrightTimeout
 from sqlalchemy import select
 
+import pravda.capture as capture_module
+import pravda.storage as storage
 from pravda.api import SnapshotCreate, _build_snapshot
 from pravda.capture import CaptureResult, capture_page
 from pravda.db import Snapshot
@@ -199,3 +201,95 @@ async def test_captured_evidence_persists(db_session):
     assert loaded.plaintext is None
     assert loaded.screenshot is None
     assert loaded.http_archive is None
+
+
+@pytest.mark.asyncio
+async def test_capture_page_dom_capture_timeout_skips_content(
+    browser: Browser, monkeypatch
+):
+    """A DOM read exceeding its budget drops html/plaintext but keeps screenshot.
+
+    CDP session creation, Page.stopLoading, and page.content share one
+    wall-clock budget; a hang in any of them leaves the rendered DOM
+    unavailable, but the screenshot (a separate stage) still captures.
+    """
+    fixture_html = (FIXTURES / "example.html").read_text()
+
+    context = await browser.new_context()
+    page = await context.new_page()
+
+    await page.route(
+        "https://example.com",
+        lambda route: route.fulfill(
+            body=fixture_html,
+            headers={"content-type": "text/html"},
+        ),
+    )
+
+    # Tighten the DOM-capture budget and stall page.content past it.
+    monkeypatch.setattr(capture_module, "DOM_CAPTURE_TIMEOUT_S", 0.2)
+
+    async def slow_content():
+        await asyncio.sleep(5)
+        return fixture_html
+
+    page.content = slow_content
+
+    result = await capture_page(page, "https://example.com")
+
+    await context.close()
+
+    assert result.http_status == 200
+    assert result.condition_met is True
+    assert result.error is None
+    # DOM capture timed out — rendered_html/plaintext unavailable.
+    assert result.rendered_html is None
+    assert result.plaintext is None
+    # Screenshot is a separate stage and still captured.
+    assert result.screenshot is not None
+
+
+@pytest.mark.asyncio
+async def test_capture_page_storage_write_timeout_skips_artifacts(
+    browser: Browser, monkeypatch
+):
+    """Artifact writes that exceed their budget yield None, not exceptions.
+
+    Each storage write (rendered HTML, plaintext, screenshot) is bounded; a
+    wedged backend cannot hang the capture. The page itself navigated and met
+    its condition, so that metadata survives — only the artifacts are dropped.
+    """
+    fixture_html = (FIXTURES / "example.html").read_text()
+
+    context = await browser.new_context()
+    page = await context.new_page()
+
+    await page.route(
+        "https://example.com",
+        lambda route: route.fulfill(
+            body=fixture_html,
+            headers={"content-type": "text/html"},
+        ),
+    )
+
+    # Tighten the write budget and stall the storage backend past it. The real
+    # put_blob path still runs; only the fsspec write boundary sleeps.
+    monkeypatch.setattr(capture_module, "STORAGE_WRITE_TIMEOUT_S", 0.01)
+
+    async def slow_pipe_file(path, value, **kwargs):
+        await asyncio.sleep(1)
+
+    monkeypatch.setattr(storage.fs, "_pipe_file", slow_pipe_file)
+
+    result = await capture_page(page, "https://example.com")
+
+    await context.close()
+
+    # The page committed and met its condition; only the writes timed out.
+    assert result.http_status == 200
+    assert result.condition_met is True
+    assert result.error is None
+    assert result.final_url == "https://example.com/"
+    assert result.plaintext is None
+    assert result.rendered_html is None
+    assert result.screenshot is None

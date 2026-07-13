@@ -17,6 +17,13 @@ fs, _base_path = fsspec.core.url_to_fs(os.environ["STORAGE_BASE_PATH"])
 if not fs.async_impl:
     fs = AsyncFileSystemWrapper(fs)
 
+# Per-write wall-clock budget applied around individual artifact writes
+# (rendered HTML, plaintext, screenshot, downloaded file) so a wedged storage
+# backend cannot hang a capture forever. HAR body writes are bounded as a
+# group by the HAR-processing stage instead, so put_blob itself stays
+# unbounded — callers wrap the specific writes that need this.
+STORAGE_WRITE_TIMEOUT_S = 15
+
 
 def normalize_hostname(url: str) -> str:
     """Normalize *url*'s hostname for use as a storage path prefix.

@@ -11,7 +11,7 @@ from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import TimeoutError as PlaywrightTimeout
 
 from pravda.db import ConditionType
-from pravda.storage import cas_name, put_blob
+from pravda.storage import STORAGE_WRITE_TIMEOUT_S, cas_name, put_blob
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +23,13 @@ CONDITION_TIMEOUT_MS = 30_000
 
 # Timeout for each individual capture operation (screenshot, etc.).
 CAPTURE_TIMEOUT_MS = 15_000
+
+# Timeout for CDP session creation, Page.stopLoading, and the DOM read
+# (page.content) as one stage.
+DOM_CAPTURE_TIMEOUT_S = 10
+
+# Timeout for download event recovery and download.save_as().
+DOWNLOAD_TIMEOUT_S = 15
 
 
 @dataclass
@@ -235,7 +242,9 @@ async def _capture_artifacts(
 
     Stopping the page first forces it into a terminal, capturable state —
     otherwise the screenshot could stall on resources that never arrive.
-    This mirrors hitting the browser's stop button.
+    This mirrors hitting the browser's stop button. CDP session creation,
+    ``Page.stopLoading``, and the DOM read (``page.content``) share one
+    wall-clock budget so a stalled page cannot wedge the capture.
 
     ``plaintext`` is derived from the rendered HTML (via BeautifulSoup's
     ``get_text``) rather than the browser's ``innerText``. ``innerText`` is
@@ -247,29 +256,40 @@ async def _capture_artifacts(
     therefore a reliable signal for whether a page's text changed and a
     downstream extraction needs re-running.
 
+    Each storage write is individually bounded; a write that exceeds its
+    budget yields ``None`` for that artifact and lets the others survive.
+
     Returns ``(plaintext, rendered_html, screenshot)`` filenames, each a
     content address ``<sha1>.<extension>`` whose extension carries its type;
     any individual capture that fails is ``None``.
     """
-    cdp = await page.context.new_cdp_session(page)
-    await cdp.send("Page.stopLoading", {})
-
-    # Capture the rendered DOM, then derive plaintext from the same source so
-    # both carry the full DOM text — including JS-injected nodes hidden by
-    # CSS, which the browser's visible-only innerText drops.
     try:
-        html = await page.content()
+        async with asyncio.timeout(DOM_CAPTURE_TIMEOUT_S):
+            cdp = await page.context.new_cdp_session(page)
+            await cdp.send("Page.stopLoading", {})
+            # Capture the rendered DOM, then derive plaintext from the same
+            # source so both carry the full DOM text — including JS-injected
+            # nodes hidden by CSS, which the browser's visible-only innerText
+            # drops.
+            html = await page.content()
     except (asyncio.TimeoutError, PlaywrightTimeout):
-        logger.warning("Timeout capturing rendered_html for %s", url)
+        logger.warning("Timeout capturing DOM content for %s", url)
         html = None
     except PlaywrightError as exception:
-        logger.warning("Failed to capture rendered_html for %s: %s", url, exception)
+        logger.warning("Failed to capture DOM content for %s: %s", url, exception)
         html = None
 
     rendered_html = plaintext = None
     if html is not None:
         html_blob = html.encode()
-        rendered_html = await put_blob(cas_name(html_blob, "html"), html_blob, url)
+        try:
+            async with asyncio.timeout(STORAGE_WRITE_TIMEOUT_S):
+                rendered_html = await put_blob(
+                    cas_name(html_blob, "html"), html_blob, url
+                )
+        except asyncio.TimeoutError:
+            logger.warning("Timeout storing rendered_html for %s", url)
+
         # Plaintext: every text node of the rendered DOM via get_text
         # (visible or not), whitespace collapsed so the hash tracks real
         # text changes — see the docstring for why this beats innerText.
@@ -277,7 +297,11 @@ async def _capture_artifacts(
             BeautifulSoup(html, "html.parser").get_text(separator=" ").split()
         )
         text_blob = text.encode()
-        plaintext = await put_blob(cas_name(text_blob, "txt"), text_blob, url)
+        try:
+            async with asyncio.timeout(STORAGE_WRITE_TIMEOUT_S):
+                plaintext = await put_blob(cas_name(text_blob, "txt"), text_blob, url)
+        except asyncio.TimeoutError:
+            logger.warning("Timeout storing plaintext for %s", url)
 
     # Use clip to constrain the screenshot width to the viewport width.
     # CSS approaches (max-width on html/body, overflow-x: hidden, etc.) don't
@@ -305,14 +329,19 @@ async def _capture_artifacts(
 
 
 async def _capture_one(name: str, callback, url: str, extension: str) -> str | None:
-    """Capture one artifact via *callback* and store the blob."""
+    """Capture one artifact via *callback* and store the blob.
+
+    The capture (``callback``) and the storage write each carry their own
+    bound; either timing out yields ``None`` for this artifact.
+    """
     try:
         data = await callback()
         blob = data.encode() if isinstance(data, str) else data
         filename = cas_name(blob, extension)
-        return await put_blob(filename, blob, url)
+        async with asyncio.timeout(STORAGE_WRITE_TIMEOUT_S):
+            return await put_blob(filename, blob, url)
     except (asyncio.TimeoutError, PlaywrightTimeout):
-        logger.warning("Timeout capturing %s for %s", name, url)
+        logger.warning("Timeout capturing or storing %s for %s", name, url)
         return None
     except PlaywrightError as exception:
         logger.warning("Failed to capture %s for %s: %s", name, url, exception)
@@ -331,23 +360,27 @@ async def _recover_download(
     We connect to Chrome over WebSocket (a remote ``playwright run-server``),
     and ``download.path()`` throws in that mode, so we can't read the file
     Playwright already wrote — ``save_as`` is the only way to get the bytes.
+    Both waiting for the event and ``save_as`` carry their own budget.
     """
     try:
-        download = await asyncio.wait_for(
-            download_future, timeout=CAPTURE_TIMEOUT_MS / 1000
-        )
+        async with asyncio.timeout(DOWNLOAD_TIMEOUT_S):
+            download = await download_future
     except asyncio.TimeoutError:
         logger.warning("Download event did not fire for %s", url)
         return None
 
     download_dir = Path(tempfile.mkdtemp())
     try:
-        await download.save_as(str(download_dir / "download"))
-        return DownloadedBody(
-            url=download.url,
-            data=(download_dir / "download").read_bytes(),
-            suggested_filename=download.suggested_filename,
-        )
+        async with asyncio.timeout(DOWNLOAD_TIMEOUT_S):
+            await download.save_as(str(download_dir / "download"))
+            return DownloadedBody(
+                url=download.url,
+                data=(download_dir / "download").read_bytes(),
+                suggested_filename=download.suggested_filename,
+            )
+    except asyncio.TimeoutError:
+        logger.warning("Timeout saving download for %s", download.url)
+        return None
     except PlaywrightError as exception:
         logger.warning("Failed to save download for %s: %s", download.url, exception)
         return None
