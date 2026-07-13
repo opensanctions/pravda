@@ -45,8 +45,9 @@ async def test_capture_page_returns_evidence(page: Page):
     assert result.final_url == "https://example.com/"
 
     # All three per-page artifacts captured, each a <sha1>.<ext> filename.
-    # The HAR is a context-lifecycle concern handled by the API layer, so
-    # capture_page does not touch it.
+    # The HAR is a context-lifecycle concern handled by session.finalize
+    # (flushed when the recording context closes), so capture_page does not
+    # touch it.
     assert result.plaintext.endswith(".txt")
     assert result.rendered_html.endswith(".html")
     assert result.screenshot.endswith(".png")

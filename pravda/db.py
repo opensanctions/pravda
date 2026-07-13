@@ -1,11 +1,10 @@
 import os
 import uuid
-from collections.abc import AsyncGenerator
 from datetime import datetime
 
 from sqlalchemy import DateTime, Integer, Text, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 engine = create_async_engine(os.environ["DATABASE_URL"])
@@ -47,8 +46,3 @@ class SnapshotRecord(Base):
     # ``response.content._file`` names a body stored as a content-addressed
     # blob (``<sha1>.<extension>``) under the storage prefix.
     http_archive: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
-
-
-async def get_session() -> AsyncGenerator[AsyncSession, None]:
-    async with async_session() as session:
-        yield session

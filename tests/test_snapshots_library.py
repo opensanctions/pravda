@@ -1,4 +1,4 @@
-"""Direct library tests for the history API and public Snapshot dataclass.
+"""Direct library tests for the history query and public Snapshot dataclass.
 
 These exercise ``pravda.snapshots()`` against rows committed through Pravda's
 own session factory — the real consumption path for a downstream caller.

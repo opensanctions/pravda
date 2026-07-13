@@ -1,6 +1,6 @@
 # Pravda
 
-Pravda is the evidence layer — a service that other services build on. It captures and stores durable, addressable evidence of web pages (HAR network recordings, screenshots, rendered HTML, plaintext, metadata) that downstream services can inspect, diff, and reason over.
+Pravda is the evidence layer — a Python library that other services build on. It captures and stores durable, addressable evidence of web pages (HAR network recordings, screenshots, rendered HTML, plaintext, metadata) that downstream services can inspect, diff, and reason over.
 
 ## Project philosophy
 
@@ -12,12 +12,23 @@ Pravda is the evidence layer — a service that other services build on. It capt
 ## Stack
 
 - **Python** 3.13+ managed by **uv**.
-- **FastAPI** — HTTP API for service-to-service access.
+- **Pravda is a library, not a service.** It is imported by the services that build on it; it connects from the caller's process to a remote browser and to Postgres/storage directly. There is no HTTP API, no Uvicorn, and no shipped image.
 - **Playwright** (Python) connecting over WebSocket to a Docker container.
 - Docker container runs **headed** Chrome in a virtual framebuffer (xvfb), exposed via `playwright run-server`. Headed mode avoids headless-detection fingerprinting that some sites use to block scrapers.
 - Launch options (`channel`, `headless`, etc.) are sent from the Python client via the `x-playwright-launch-options` WebSocket header — no custom server JS needed.
-- **Postgres** accessed via **SQLAlchemy** (async) — stores snapshot metadata and the index of recorded response bodies. Schema changes are managed with **Alembic** migrations (see [Database migrations](#database-migrations)); the app does not create the schema on startup.
+- **Postgres** accessed via **SQLAlchemy** (async) — stores snapshot metadata and the index of recorded response bodies. Schema changes are managed with **Alembic** migrations (see [Database migrations](#database-migrations)); the library does not create the schema.
 - **fsspec** for content-addressed blob storage on any filesystem (local, S3, GCS). The local FS is wrapped in `AsyncFileSystemWrapper` so writes don't block the event loop; remote backends are natively async. See `pravda/storage.py`.
+
+## Public API
+
+Exported from `pravda`:
+
+- `snapshot(url)` — one-shot capture: connect to the remote browser, navigate (waiting for the normal `load` state), capture evidence, process the HAR, and persist. The whole pipeline runs under a wall-clock breaker; browser/navigation/timeout failures are still persisted as `Snapshot` rows with `error` set and no evidence.
+- `browser()` — an async context manager yielding a `BrowserSession` that owns the driver/connection/recording context/one page. The caller drives `session.page` with **real Playwright** (selectors, load states, clicks, form fills) for custom readiness; `await session.snapshot()` (terminal) captures and persists.
+- `snapshots(url)` — history query returning every exact-URL match newest first. No pagination.
+- `Snapshot` — the immutable public value (a frozen dataclass). `PravdaError` — misuse of a terminal session.
+
+Pravda owns its database sessions: every attempt (success, partial, or failure) is committed through `pravda.db.async_session` and returned as a public `Snapshot`. Callers need no database wiring.
 
 ## Conventions
 
@@ -26,8 +37,7 @@ Pravda is the evidence layer — a service that other services build on. It capt
 - Playwright browsers are NOT installed locally — they live in the Docker container. The `playwright` Python package is a client only.
 - Keep imports at the top of each file. No lazy imports unless there's a real cost.
 - Use `pathlib.Path` for file paths, not string manipulation.
-- Environment-specific config goes in `.env`, loaded by uvicorn via `--env-file`.
-- Read env vars with `os.environ` in the module that needs them.
+- Configuration is read from the environment (`os.environ`) in the module that needs it — `BROWSER_WS_URL`, `DATABASE_URL`, `STORAGE_BASE_PATH`. The library is config-injected by env, never by constructor arguments. `.env` holds those values for ad-hoc commands and migrations, loaded via `uv run --env-file .env`.
 - True constants (paths, format strings, etc.) live in the module that uses them.
 - Use the Python `logging` module for logging. Get loggers with `logging.getLogger(__name__)`.
 - The user manages git commits, branching, etc.
@@ -35,28 +45,32 @@ Pravda is the evidence layer — a service that other services build on. It capt
 
 ## Downloads and PDFs
 
-Chrome's viewer extensions can consume a response stream before it reaches the renderer (the PDF viewer is the main case). The browser image sets the `AlwaysOpenPdfExternally` Chrome policy so these become downloads instead; `capture_page` recovers the bytes via Playwright's `download` event and the API layer folds them back into the matching HAR entry as a `content._file`. So a downloaded body looks like any other — no dedicated PDF field.
+Chrome's viewer extensions can consume a response stream before it reaches the renderer (the PDF viewer is the main case). The browser image sets the `AlwaysOpenPdfExternally` Chrome policy so these become downloads instead; `capture_page`/`capture_current` recovers the bytes via Playwright's `download` event and HAR processing (`pravda.http_archive`) folds them back into the matching HAR entry as a `content._file`. So a downloaded body looks like any other — no dedicated PDF field.
 
 ## Storage and access model
 
-Pravda uses content-addressed storage (filenames of the form `<sha1>.<extension>`, where the extension carries the artifact's type). The API returns file paths in snapshot responses — there is no blob download endpoint. Downstream services that share access to the same storage (local volume, S3 bucket, GCS bucket) can read files directly from the returned path. Pravda is the evidence capture layer, not a content delivery proxy.
+Pravda uses content-addressed storage (filenames of the form `<sha1>.<extension>`, where the extension carries the artifact's type). `Snapshot` values expose file paths — there is no blob download endpoint. Downstream services that share access to the same storage (local volume, S3 bucket, GCS bucket) can read files directly from the returned path. Pravda is the evidence capture layer, not a content delivery proxy.
 
 ## Running
 
+Pravda has no server to run. Bring up the infrastructure it connects to, install the library, and apply migrations from the host:
+
 ```bash
-# Playwright + Postgres
+# Remote browser + dev/test Postgres
+# (playwright server, postgres_dev :5432, postgres_test :5433)
 docker compose up -d
 
-# Run the API server
-uv run uvicorn pravda.api:app --reload --reload-dir pravda --env-file .env
+# Install the library and its dependencies
+uv sync
 
-# Stop all containers
+# Apply migrations to the dev database
+uv run --env-file .env alembic upgrade head
+
+# Stop the containers
 docker compose down
 ```
 
-`docker-compose.yml` runs two Postgres instances: `postgres_dev` (:5432, used by the API) and `postgres_test` (:5433, used by the test suite). Both start together so a fresh checkout is ready for either.
-
-The compose `db_migrate` service runs `alembic upgrade head` and the `api` service waits for it to finish, so `docker compose up` applies pending migrations before the app boots. (The `db_migrate` and `api` services override `DATABASE_URL` to the `postgres_dev` service hostname; `.env` keeps `localhost` for running uvicorn on the host.)
+`docker-compose.yml` runs three services: the headed `playwright` browser server, `postgres_dev` (`:5432`, what the library commits to via `DATABASE_URL`), and `postgres_test` (`:5433`, used by the test suite). Both Postgres instances start together so a fresh checkout is ready for either. The schema is not created automatically — run `alembic upgrade head` once the dev database is up. `.env` keeps hostnames as `localhost` so the library and migrations run against the compose-exposed ports from the host.
 
 ## Database migrations
 
@@ -82,7 +96,7 @@ uv add <package>
 
 Test behavior, not implementation. If renaming an internal function breaks a test, the test is wrong.
 
-- **Real database.** Each test runs inside a transaction that rolls back after. Tests are isolated, fast, and leave no residue. The schema is built with `Base.metadata.create_all` in `tests/conftest.py` (not via Alembic) so tests stay independent of the migration history.
+- **Real database.** The schema is built once per session with `Base.metadata.create_all` in `tests/conftest.py` (not via Alembic) so tests stay independent of the migration history. Because Pravda owns its sessions and commits through `pravda.db.async_session`, library tests can't wrap a commit in a rollback transaction — the `clean_snapshots` fixture deletes rows committed through that factory after each test. Storage and route interception are the other boundaries.
 - **No real network.** Use Playwright's `page.route()` to serve fixture content from `tests/fixtures/`. Deterministic, offline-friendly.
 - **Don't mock internals.** Mock at the boundary only: tmp dirs for storage, route interception for the browser. If you feel the urge to mock something inside a module, the module probably needs a cleaner seam.
 - **Keep it minimal.** Few, meaningful tests that cover the actual workflow. No tests for getters, no tests that just assert a mock was called.

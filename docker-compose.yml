@@ -1,35 +1,4 @@
 services:
-  api:
-    build: .
-    env_file: .env
-    # Inside the compose network the DB and browser are reached by service
-    # name, not localhost (which would be the api container itself).
-    environment:
-      - DATABASE_URL=postgresql+asyncpg://pravda:pravda@postgres_dev:5432/pravda_dev
-      - BROWSER_WS_URL=ws://playwright:3000
-    ports:
-      - "8000:8000"
-    depends_on:
-      postgres_dev:
-        condition: service_healthy
-      db_migrate:
-        condition: service_completed_successfully
-      playwright:
-        condition: service_healthy
-
-  # One-shot: applies pending migrations (``alembic upgrade head``) then
-  # exits. ``api`` waits for it to finish successfully before booting, so a
-  # fresh ``docker compose up`` brings the schema up before the app starts.
-  db_migrate:
-    build: .
-    env_file: .env
-    command: alembic upgrade head
-    environment:
-      - DATABASE_URL=postgresql+asyncpg://pravda:pravda@postgres_dev:5432/pravda_dev
-    depends_on:
-      postgres_dev:
-        condition: service_healthy
-
   playwright:
     build:
       context: .
@@ -39,7 +8,7 @@ services:
       - "3000:3000"
     # Playwright's server exposes an HTTP /json listing of its browser
     # endpoints; it answers only once the WebSocket server is accepting
-    # connections, so this doubles as a readiness gate for the api service.
+    # connections, so this doubles as a readiness gate for clients.
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3000/json"]
       interval: 10s

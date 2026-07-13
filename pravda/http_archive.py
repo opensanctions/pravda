@@ -6,8 +6,8 @@ per response body. Each manifest entry's ``response.content._file`` is itself a
 content address — the same scheme we use internally — so we store every body
 verbatim under that name. The manifest is then a self-describing index into
 the storage backend with no rewriting needed. We return the manifest so the
-caller can persist it inline (as JSON) in the database and serve it straight
-from the API.
+caller can persist it inline (as JSON) in the database row and expose it on
+the public Snapshot.
 """
 
 import asyncio

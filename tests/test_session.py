@@ -54,7 +54,7 @@ async def test_snapshot_persists_failed_attempt():
     assert snapshot.screenshot is None
     assert snapshot.http_archive is None
 
-    # Committed through Pravda's own session — visible to the history API.
+    # Committed through Pravda's own session — visible to snapshots().
     history = await snapshots("https://localhost:39999/")
     assert any(item.id == snapshot.id for item in history)
 

@@ -1,11 +1,8 @@
-from collections.abc import AsyncGenerator
-
 import pytest
 from fsspec.implementations.asyn_wrapper import AsyncFileSystemWrapper
 from fsspec.implementations.local import LocalFileSystem
 from playwright.async_api import async_playwright
 from sqlalchemy import delete
-from sqlalchemy.ext.asyncio import AsyncSession
 
 import pravda.db as pravda_db
 import pravda.storage as storage
@@ -24,20 +21,6 @@ async def db_schema():
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.drop_all)
     await engine.dispose()
-
-
-@pytest.fixture()
-async def db_session(db_schema) -> AsyncGenerator[AsyncSession, None]:
-    """Provide an isolated session for dependency-injected database access."""
-    connection = await engine.connect()
-    transaction = await connection.begin()
-    session = AsyncSession(bind=connection, expire_on_commit=False)
-    try:
-        yield session
-    finally:
-        await session.close()
-        await transaction.rollback()
-        await connection.close()
 
 
 @pytest.fixture()
