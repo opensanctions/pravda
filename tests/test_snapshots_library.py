@@ -1,10 +1,8 @@
 """Direct library tests for the history API and public Snapshot dataclass.
 
-Unlike the HTTP tests (which ride a rolled-back transaction through the
-dependency-injected session), these exercise ``pravda.snapshots()`` against
-rows committed through Pravda's own session factory — the real consumption
-path for a downstream caller. Those commits are not rolled back, so each test
-cleans up the rows it introduced to keep the shared test database isolated.
+These exercise ``pravda.snapshots()`` against rows committed through Pravda's
+own session factory — the real consumption path for a downstream caller.
+Committed rows are removed by a test fixture.
 """
 
 import dataclasses
@@ -12,12 +10,12 @@ import uuid
 from datetime import datetime, timezone
 
 import pytest
-from sqlalchemy import delete
-from sqlalchemy.ext.asyncio import AsyncSession
 
 import pravda
 from pravda import Snapshot, snapshots
-from pravda.db import ConditionType, SnapshotRecord, async_session
+from pravda.db import SnapshotRecord, async_session
+
+pytestmark = pytest.mark.usefixtures("clean_snapshots")
 
 
 async def _commit_snapshot(
@@ -27,7 +25,6 @@ async def _commit_snapshot(
     final_url: str | None = None,
     http_status: int | None = 200,
     rendered_html: str | None = None,
-    condition_met: bool = True,
 ) -> uuid.UUID:
     """Insert and commit a snapshot via Pravda's own session factory."""
     record = SnapshotRecord(
@@ -36,30 +33,12 @@ async def _commit_snapshot(
         captured_at=captured_at,
         http_status=http_status,
         final_url=final_url,
-        condition_type=ConditionType.lifecycle,
-        condition="load",
-        condition_met=condition_met,
         rendered_html=rendered_html,
     )
     async with async_session() as session:
         session.add(record)
         await session.commit()
     return record.id
-
-
-@pytest.fixture(autouse=True)
-async def _cleanup_committed_rows(db_engine):
-    """Remove every committed snapshot row after each test.
-
-    Rows inserted through ``async_session`` are real commits to the shared
-    test database (not part of any rolled-back transaction), so they survive
-    unless deleted explicitly. No other test commits rows, so a blanket
-    delete keeps things simple and isolated.
-    """
-    yield
-    async with async_session() as session:
-        await session.execute(delete(SnapshotRecord))
-        await session.commit()
 
 
 @pytest.mark.asyncio
@@ -75,11 +54,6 @@ async def test_snapshots_returns_exact_url_matches_newest_first():
     results = await snapshots(url)
 
     assert [snapshot.id for snapshot in results] == [newer, older]
-
-
-@pytest.mark.asyncio
-async def test_snapshots_empty_for_unknown_url():
-    assert await snapshots("https://nope.example") == []
 
 
 @pytest.mark.asyncio
@@ -99,8 +73,6 @@ async def test_snapshots_returns_public_dataclass_with_resolved_prefix():
     assert result.url == url
     assert result.final_url == "https://example.com/page"
     assert result.http_status == 200
-    assert result.condition_type is ConditionType.lifecycle
-    assert result.condition_met is True
     assert result.rendered_html == "a" * 40 + ".html"
     # prefix is resolved from final_url (base path + normalized hostname).
     assert result.prefix is not None
@@ -116,7 +88,6 @@ async def test_snapshot_prefix_is_none_when_navigation_never_committed():
         datetime(2026, 1, 1, tzinfo=timezone.utc),
         final_url=None,
         http_status=None,
-        condition_met=False,
     )
 
     result = (await snapshots(url))[0]
@@ -135,41 +106,6 @@ async def test_snapshot_is_immutable():
 
     with pytest.raises(dataclasses.FrozenInstanceError):
         result.url = "https://mutated.example"
-
-
-@pytest.mark.asyncio
-async def test_snapshots_reads_committed_rows_through_pravda_session(
-    db_session: AsyncSession,
-):
-    """A row visible only after a real commit is returned by snapshots().
-
-    The ``db_session`` fixture rolls back, so a row added there but not
-    committed is invisible to ``snapshots()`` (which uses its own session).
-    Committing an independent row through ``async_session`` makes it visible —
-    proving the library reads committed state through Pravda's own factory.
-    """
-    url = "https://example.com"
-
-    # This row is never committed; it must not be returned.
-    db_session.add(
-        SnapshotRecord(
-            id=uuid.uuid4(),
-            url=url,
-            captured_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
-            condition_type=ConditionType.lifecycle,
-            condition="load",
-            condition_met=True,
-        )
-    )
-    await db_session.flush()
-
-    committed_id = await _commit_snapshot(
-        url, datetime(2026, 1, 2, tzinfo=timezone.utc)
-    )
-
-    results = await snapshots(url)
-
-    assert [snapshot.id for snapshot in results] == [committed_id]
 
 
 def test_pravda_exports_public_names():

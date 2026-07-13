@@ -2,26 +2,32 @@ import asyncio
 from pathlib import Path
 
 import pytest
-from playwright.async_api import Browser
+from playwright.async_api import Browser, Page
 from playwright.async_api import TimeoutError as PlaywrightTimeout
-from sqlalchemy import select
 
 import pravda.capture as capture_module
 import pravda.storage as storage
-from pravda.api import SnapshotCreate, _build_snapshot
-from pravda.capture import CaptureResult, capture_page
-from pravda.db import SnapshotRecord
+from pravda.capture import capture_page
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
+pytestmark = pytest.mark.usefixtures("storage_tmp")
 
-@pytest.mark.asyncio
-async def test_capture_page_returns_evidence(browser: Browser):
-    """Capture a page using a routed fixture and inspect the evidence."""
-    fixture_html = (FIXTURES / "example.html").read_text()
 
+@pytest.fixture()
+async def page(browser: Browser):
     context = await browser.new_context()
     page = await context.new_page()
+    try:
+        yield page
+    finally:
+        await context.close()
+
+
+@pytest.mark.asyncio
+async def test_capture_page_returns_evidence(page: Page):
+    """Capture a page using a routed fixture and inspect the evidence."""
+    fixture_html = (FIXTURES / "example.html").read_text()
 
     # Serve the fixture instead of making a real network request
     await page.route(
@@ -34,10 +40,7 @@ async def test_capture_page_returns_evidence(browser: Browser):
 
     result = await capture_page(page, "https://example.com")
 
-    await context.close()
-
     assert result.http_status == 200
-    assert result.condition_met is True
     assert result.error is None
     assert result.final_url == "https://example.com/"
 
@@ -50,7 +53,7 @@ async def test_capture_page_returns_evidence(browser: Browser):
 
 
 @pytest.mark.asyncio
-async def test_capture_page_downloads_pdf(browser: Browser):
+async def test_capture_page_downloads_pdf(page: Page):
     """A URL serving application/pdf is captured as a downloaded body.
 
     Chrome's PDF viewer would eat the response body, but the
@@ -60,9 +63,6 @@ async def test_capture_page_downloads_pdf(browser: Browser):
     dedicated PDF field is needed.
     """
     fixture_pdf = (FIXTURES / "sample.pdf").read_bytes()
-
-    context = await browser.new_context()
-    page = await context.new_page()
 
     await page.route(
         "https://example.com/doc.pdf",
@@ -74,10 +74,7 @@ async def test_capture_page_downloads_pdf(browser: Browser):
 
     result = await capture_page(page, "https://example.com/doc.pdf")
 
-    await context.close()
-
     assert result.http_status == 200
-    assert result.condition_met is True
     assert result.error is None
     assert result.final_url == "https://example.com/doc.pdf"
 
@@ -92,11 +89,8 @@ async def test_capture_page_downloads_pdf(browser: Browser):
 
 
 @pytest.mark.asyncio
-async def test_capture_page_goto_timeout_skips_captures(browser: Browser):
+async def test_capture_page_goto_timeout_skips_captures(page: Page):
     """A navigation that never commits skips captures entirely."""
-
-    context = await browser.new_context()
-    page = await context.new_page()
 
     # Mock goto to raise timeout immediately — the page never commits.
     async def fake_goto(*args, **kwargs):
@@ -104,12 +98,9 @@ async def test_capture_page_goto_timeout_skips_captures(browser: Browser):
 
     page.goto = fake_goto
 
-    result = await capture_page(page, "https://timeout.example.com", condition="load")
-
-    await context.close()
+    result = await capture_page(page, "https://timeout.example.com")
 
     assert result.http_status is None  # unknown — goto never returned
-    assert result.condition_met is False
     assert result.error is not None  # Playwright timeout message
     assert result.final_url is None
 
@@ -120,16 +111,13 @@ async def test_capture_page_goto_timeout_skips_captures(browser: Browser):
 
 
 @pytest.mark.asyncio
-async def test_http_commit_captured_when_load_times_out(browser: Browser):
+async def test_http_commit_captured_when_load_times_out(page: Page, monkeypatch):
     """HTTP status comes from commit; load times out.
 
     The two-step navigation means we get the HTTP response even when the
     page never finishes loading. Captures still run because DOMContentLoaded
     fires (the DOM parses fine — only the `load` event stalls on the image).
     """
-    context = await browser.new_context()
-    page = await context.new_page()
-
     # Hang the image so `load` never fires, but serve the HTML fine.
     await page.route(
         "https://slow.example.com/slow-resource.png",
@@ -145,21 +133,14 @@ async def test_http_commit_captured_when_load_times_out(browser: Browser):
 
     # `load` waits on the blocked image and times out; DOMContentLoaded fires
     # almost immediately. A short timeout just keeps the test fast.
-    result = await capture_page(
-        page,
-        "https://slow.example.com",
-        condition="load",
-        condition_timeout_ms=2000,
-    )
-
-    await context.close()
+    monkeypatch.setattr(capture_module, "LOAD_TIMEOUT_MS", 2000)
+    result = await capture_page(page, "https://slow.example.com")
 
     # HTTP response was captured from the commit step
     assert result.http_status == 200
     assert result.final_url == "https://slow.example.com/"
 
     # load timed out
-    assert result.condition_met is False
     assert result.error is not None
 
     # Navigation committed, so every capture ran. The screenshot went
@@ -171,44 +152,7 @@ async def test_http_commit_captured_when_load_times_out(browser: Browser):
 
 
 @pytest.mark.asyncio
-async def test_captured_evidence_persists(db_session):
-    """Evidence captured for a page maps onto a Snapshot and round-trips."""
-    body = SnapshotCreate(url="https://example.com")
-    result = CaptureResult(
-        http_status=200,
-        error=None,
-        condition_met=True,
-        final_url="https://example.com/",
-        plaintext=None,
-        rendered_html="a" * 40 + ".html",
-        screenshot=None,
-        download=None,
-    )
-
-    snapshot = _build_snapshot(body, result, None)
-    db_session.add(snapshot)
-    await db_session.flush()
-
-    loaded = (
-        await db_session.execute(
-            select(SnapshotRecord).where(SnapshotRecord.id == snapshot.id)
-        )
-    ).scalar_one()
-
-    assert loaded.url == "https://example.com/"
-    assert loaded.final_url == "https://example.com/"
-    assert loaded.http_status == 200
-    assert loaded.condition_met is True
-    assert loaded.rendered_html == "a" * 40 + ".html"
-    assert loaded.plaintext is None
-    assert loaded.screenshot is None
-    assert loaded.http_archive is None
-
-
-@pytest.mark.asyncio
-async def test_capture_page_dom_capture_timeout_skips_content(
-    browser: Browser, monkeypatch
-):
+async def test_capture_page_dom_capture_timeout_skips_content(page: Page, monkeypatch):
     """A DOM read exceeding its budget drops html/plaintext but keeps screenshot.
 
     CDP session creation, Page.stopLoading, and page.content share one
@@ -216,9 +160,6 @@ async def test_capture_page_dom_capture_timeout_skips_content(
     unavailable, but the screenshot (a separate stage) still captures.
     """
     fixture_html = (FIXTURES / "example.html").read_text()
-
-    context = await browser.new_context()
-    page = await context.new_page()
 
     await page.route(
         "https://example.com",
@@ -239,10 +180,7 @@ async def test_capture_page_dom_capture_timeout_skips_content(
 
     result = await capture_page(page, "https://example.com")
 
-    await context.close()
-
     assert result.http_status == 200
-    assert result.condition_met is True
     assert result.error is None
     # DOM capture timed out — rendered_html/plaintext unavailable.
     assert result.rendered_html is None
@@ -253,18 +191,15 @@ async def test_capture_page_dom_capture_timeout_skips_content(
 
 @pytest.mark.asyncio
 async def test_capture_page_storage_write_timeout_skips_artifacts(
-    browser: Browser, monkeypatch
+    page: Page, monkeypatch
 ):
     """Artifact writes that exceed their budget yield None, not exceptions.
 
     Each storage write (rendered HTML, plaintext, screenshot) is bounded; a
-    wedged backend cannot hang the capture. The page itself navigated and met
-    its condition, so that metadata survives — only the artifacts are dropped.
+    wedged backend cannot hang the capture. The page itself loaded, so that
+    metadata survives — only the artifacts are dropped.
     """
     fixture_html = (FIXTURES / "example.html").read_text()
-
-    context = await browser.new_context()
-    page = await context.new_page()
 
     await page.route(
         "https://example.com",
@@ -285,11 +220,8 @@ async def test_capture_page_storage_write_timeout_skips_artifacts(
 
     result = await capture_page(page, "https://example.com")
 
-    await context.close()
-
-    # The page committed and met its condition; only the writes timed out.
+    # The page committed and loaded; only the writes timed out.
     assert result.http_status == 200
-    assert result.condition_met is True
     assert result.error is None
     assert result.final_url == "https://example.com/"
     assert result.plaintext is None

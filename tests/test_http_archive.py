@@ -6,8 +6,6 @@ import zipfile
 from pathlib import Path
 
 import pytest
-from fsspec.implementations.asyn_wrapper import AsyncFileSystemWrapper
-from fsspec.implementations.local import LocalFileSystem
 
 import pravda.http_archive as har_module
 import pravda.storage as storage
@@ -16,14 +14,6 @@ from pravda.http_archive import capture_http_archive
 from pravda.storage import content_prefix
 
 PAGE_URL = "https://example.com/doc.pdf"
-
-
-@pytest.fixture()
-def storage_tmp(tmp_path, monkeypatch):
-    # Point the storage backend at a throwaway local dir.
-    monkeypatch.setattr(storage, "fs", AsyncFileSystemWrapper(LocalFileSystem()))
-    monkeypatch.setattr(storage, "_base_path", str(tmp_path))
-    return tmp_path
 
 
 @pytest.mark.asyncio

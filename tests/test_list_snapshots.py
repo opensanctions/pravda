@@ -6,7 +6,7 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from pravda.api import app
-from pravda.db import ConditionType, SnapshotRecord
+from pravda.db import SnapshotRecord
 
 
 @pytest.fixture()
@@ -18,11 +18,13 @@ async def client(db_session: AsyncSession):
         yield db_session
 
     app.dependency_overrides[get_session] = _override_session
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as c:
-        yield c
-    app.dependency_overrides.clear()
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            yield client
+    finally:
+        app.dependency_overrides.clear()
 
 
 async def _insert_snapshot(
@@ -33,9 +35,6 @@ async def _insert_snapshot(
         url=url,
         captured_at=captured_at,
         http_status=http_status,
-        condition_type=ConditionType.lifecycle,
-        condition="load",
-        condition_met=True,
     )
     snapshot.rendered_html = "a" * 64
     db.add(snapshot)

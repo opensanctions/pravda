@@ -6,7 +6,7 @@ from datetime import datetime
 
 from sqlalchemy import select
 
-from pravda.db import ConditionType, SnapshotRecord, async_session
+from pravda.db import SnapshotRecord, async_session
 from pravda.storage import content_prefix
 
 
@@ -33,9 +33,6 @@ class Snapshot:
     captured_at: datetime
     http_status: int | None
     error: str | None
-    condition_type: ConditionType
-    condition: str
-    condition_met: bool
     prefix: str | None
     plaintext: str | None
     rendered_html: str | None
@@ -57,9 +54,6 @@ def from_record(record: SnapshotRecord) -> Snapshot:
         captured_at=record.captured_at,
         http_status=record.http_status,
         error=record.error,
-        condition_type=record.condition_type,
-        condition=record.condition,
-        condition_met=record.condition_met,
         prefix=content_prefix(record.final_url) if record.final_url else None,
         plaintext=record.plaintext,
         rendered_html=record.rendered_html,

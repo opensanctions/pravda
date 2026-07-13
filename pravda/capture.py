@@ -10,7 +10,6 @@ from playwright.async_api import Download, Page
 from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import TimeoutError as PlaywrightTimeout
 
-from pravda.db import ConditionType
 from pravda.storage import STORAGE_WRITE_TIMEOUT_S, cas_name, put_blob
 
 logger = logging.getLogger(__name__)
@@ -18,8 +17,8 @@ logger = logging.getLogger(__name__)
 # Timeout for navigation (reaching "commit" — first HTTP response received).
 NAV_TIMEOUT_MS = 10_000
 
-# Timeout for waiting on the page condition after navigation.
-CONDITION_TIMEOUT_MS = 30_000
+# Timeout for waiting on the normal load state after navigation.
+LOAD_TIMEOUT_MS = 30_000
 
 # Timeout for each individual capture operation (screenshot, etc.).
 CAPTURE_TIMEOUT_MS = 15_000
@@ -59,7 +58,6 @@ class CaptureResult:
 
     http_status: int | None
     error: str | None
-    condition_met: bool
     final_url: str | None
     plaintext: str | None
     rendered_html: str | None
@@ -67,15 +65,16 @@ class CaptureResult:
     download: DownloadedBody | None
 
 
-async def capture_page(
-    page: Page,
-    url: str,
-    condition_type: ConditionType = ConditionType.lifecycle,
-    condition: str = "load",
-    condition_timeout_ms: int = CONDITION_TIMEOUT_MS,
-) -> CaptureResult:
+async def capture_page(page: Page, url: str) -> CaptureResult:
     """Navigate to *url* and capture evidence: HTTP response and
     screenshot/HTML/text blobs.
+
+    Readiness is a fixed internal default: navigate to ``commit`` (first
+    response), then wait for the normal ``load`` state. Reading the status at
+    commit — *before* the load wait — means a load timeout still records the
+    HTTP response and any partial page evidence. This is an implementation
+    detail of the one-shot path, not public configuration; callers needing
+    anything else drive the real Playwright page through ``browser()``.
 
     The network archive (a HAR recording) is not captured here — it is bound
     to the browser context's lifecycle, so the caller (which owns the
@@ -112,9 +111,7 @@ async def capture_page(
     page.on("download", _record_download)
     page.on("response", _record_response)
     try:
-        navigation = await _navigate(
-            page, url, condition_type, condition, condition_timeout_ms
-        )
+        navigation = await _navigate(page, url)
 
         # Defaults; the download branch overrides status/url, the
         # committed-navigation branch overrides the artifacts.
@@ -142,7 +139,6 @@ async def capture_page(
         return CaptureResult(
             http_status=http_status,
             error=navigation.error,
-            condition_met=navigation.condition_met,
             final_url=final_url,
             plaintext=plaintext,
             rendered_html=rendered_html,
@@ -157,27 +153,17 @@ async def capture_page(
 @dataclass
 class _Navigation:
     http_status: int | None
-    condition_met: bool
     error: str | None
     final_url: str | None
     is_download: bool
 
 
-async def _navigate(
-    page: Page,
-    url: str,
-    condition_type: ConditionType,
-    condition: str,
-    condition_timeout_ms: int,
-) -> _Navigation:
-    """Navigate to *url*, then wait for the requested condition.
+async def _navigate(page: Page, url: str) -> _Navigation:
+    """Navigate to *url* and wait for the normal ``load`` state.
 
-    Status is read at "commit" (first response), *before* the condition
-    wait — so a condition timeout still records the HTTP response.
-
-    Lifecycle conditions use Playwright's ``wait_for_load_state`` ("commit"
-    needs no extra wait — ``page.goto`` already waited for it); selector
-    conditions use ``wait_for_selector``.
+    Status is read at "commit" (first response), *before* the load wait — so
+    a load timeout still records the HTTP response and lets the partial page
+    evidence (DOM already parsed) be captured.
     """
     http_status: int | None = None
     final_url: str | None = None
@@ -186,15 +172,9 @@ async def _navigate(
         http_status = response.status
         # page.url reflects any redirects that happened during navigation.
         final_url = page.url
-
-        if condition_type is ConditionType.selector:
-            await page.wait_for_selector(condition, timeout=condition_timeout_ms)
-        elif condition != "commit":
-            await page.wait_for_load_state(condition, timeout=condition_timeout_ms)
-
+        await page.wait_for_load_state("load", timeout=LOAD_TIMEOUT_MS)
         return _Navigation(
-            http_status,
-            condition_met=True,
+            http_status=http_status,
             error=None,
             final_url=final_url,
             is_download=False,
@@ -211,24 +191,16 @@ async def _navigate(
             logger.info("Navigation became a download for %s", url)
             return _Navigation(
                 http_status=None,
-                condition_met=True,
                 error=None,
                 final_url=page.url or url,
                 is_download=True,
             )
         error = str(exception) or (
-            f"Timeout {condition_timeout_ms}ms exceeded waiting for '{condition}'"
+            f"Timeout {LOAD_TIMEOUT_MS}ms exceeded waiting for 'load'"
         )
-        logger.warning(
-            "Timeout for %s (condition_type=%s, condition=%s): %s",
-            url,
-            condition_type.value,
-            condition,
-            error,
-        )
+        logger.warning("Timeout for %s: %s", url, error)
         return _Navigation(
-            http_status,
-            condition_met=False,
+            http_status=http_status,
             error=error,
             final_url=final_url,
             is_download=False,
@@ -348,19 +320,60 @@ async def _capture_one(name: str, callback, url: str, extension: str) -> str | N
         return None
 
 
+async def capture_current(
+    page: Page,
+    final_url: str,
+    navigation_status: int | None,
+    download: Download | None,
+) -> CaptureResult:
+    """Capture evidence from the page's *current* state, without navigating.
+
+    The interactive counterpart to :func:`capture_page`: the caller has
+    already navigated to and interacted with *page* (a ``browser()``
+    session). This captures the page-content artifacts (HTML/plaintext/
+    screenshot) from the current DOM, records the main-document status the
+    session observed (``navigation_status``) and the current URL
+    (``final_url``), and — when a download fired during the session — recovers
+    its bytes for the caller to fold back into the HAR.
+
+    A download (e.g. a PDF the navigation handed off to) leaves the page at
+    ``about:blank`` with nothing meaningful to render, so the page-content
+    artifacts are skipped and only the download bytes are captured — matching
+    the one-shot PDF path. Returns the evidence as a ``CaptureResult``;
+    storing it is the caller's job — this function never touches the database.
+    """
+    downloaded: DownloadedBody | None = None
+    if download is not None:
+        downloaded = await _save_download(download)
+
+    plaintext = rendered_html = screenshot = None
+    # Only capture page artifacts for a real committed document — not a
+    # download (the page holds about:blank) nor a session that never
+    # navigated (no document at all).
+    if navigation_status is not None and download is None:
+        plaintext, rendered_html, screenshot = await _capture_artifacts(page, final_url)
+
+    return CaptureResult(
+        http_status=navigation_status,
+        error=None,
+        final_url=final_url,
+        plaintext=plaintext,
+        rendered_html=rendered_html,
+        screenshot=screenshot,
+        download=downloaded,
+    )
+
+
 async def _recover_download(
     download_future: "asyncio.Future[Download]", url: str
 ) -> DownloadedBody | None:
-    """Recover the bytes of a navigation that handed off as a download.
+    """Wait for the download event of a navigation that handed off as a
+    download, then save its bytes.
 
-    The body never reached the renderer (Chrome's viewer swallowed it), so we
-    read it from the ``download`` event instead. Returns ``None`` when the
-    event never fires or yields no bytes.
-
-    We connect to Chrome over WebSocket (a remote ``playwright run-server``),
-    and ``download.path()`` throws in that mode, so we can't read the file
-    Playwright already wrote — ``save_as`` is the only way to get the bytes.
-    Both waiting for the event and ``save_as`` carry their own budget.
+    Used by the one-shot path, where ``page.goto`` itself becomes a download
+    (e.g. a PDF) and the event arrives asynchronously. The interactive path
+    resolves its download event itself and calls :func:`_save_download`
+    directly.
     """
     try:
         async with asyncio.timeout(DOWNLOAD_TIMEOUT_S):
@@ -368,7 +381,21 @@ async def _recover_download(
     except asyncio.TimeoutError:
         logger.warning("Download event did not fire for %s", url)
         return None
+    return await _save_download(download)
 
+
+async def _save_download(download: Download) -> DownloadedBody | None:
+    """Save a resolved download's bytes as a ``DownloadedBody``.
+
+    The body never reached the renderer (Chrome's viewer swallowed it), so we
+    read it from the download instead. Returns ``None`` when the save exceeds
+    its budget or Playwright reports an error, so the caller can leave the
+    matching HAR entry bodyless instead of dropping the whole archive.
+
+    We connect to Chrome over WebSocket (a remote ``playwright run-server``),
+    and ``download.path()`` throws in that mode, so we can't read the file
+    Playwright already wrote — ``save_as`` is the only way to get the bytes.
+    """
     download_dir = Path(tempfile.mkdtemp())
     try:
         async with asyncio.timeout(DOWNLOAD_TIMEOUT_S):

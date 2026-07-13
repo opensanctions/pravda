@@ -1,28 +1,15 @@
-import enum
 import os
 import uuid
 from collections.abc import AsyncGenerator
 from datetime import datetime
 
-from sqlalchemy import (
-    Boolean,
-    DateTime,
-    Enum,
-    Integer,
-    Text,
-    func,
-)
+from sqlalchemy import DateTime, Integer, Text, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 engine = create_async_engine(os.environ["DATABASE_URL"])
 async_session = async_sessionmaker(engine, expire_on_commit=False)
-
-
-class ConditionType(enum.Enum):
-    lifecycle = "lifecycle"
-    selector = "selector"
 
 
 class Base(DeclarativeBase):
@@ -34,8 +21,7 @@ class SnapshotRecord(Base):
 
     This is the SQLAlchemy ORM mapping — a storage detail. The public,
     immutable domain value is ``pravda.snapshots.Snapshot``; ``from_record``
-    converts a row into one. The table name and schema are unchanged by the
-    Python rename.
+    converts a row into one.
     """
 
     __tablename__ = "snapshot"
@@ -50,11 +36,6 @@ class SnapshotRecord(Base):
     )
     http_status: Mapped[int | None] = mapped_column(Integer, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
-    condition_type: Mapped[ConditionType] = mapped_column(
-        Enum(ConditionType), nullable=False
-    )
-    condition: Mapped[str] = mapped_column(Text, nullable=False)
-    condition_met: Mapped[bool] = mapped_column(Boolean, nullable=False)
 
     # Captured evidence. Each is a content-addressed filename
     # (``<sha1>.<extension>``) under the shared storage backend; the
