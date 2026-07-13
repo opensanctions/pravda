@@ -34,6 +34,7 @@ services:
     init: true
     ports:
       - "3000:3000"
+
   postgres_dev:
     image: postgres:18
     environment:

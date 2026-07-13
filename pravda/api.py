@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import os
@@ -24,6 +25,22 @@ from pravda.storage import content_prefix
 
 BROWSER_CHANNEL = "chrome"
 BROWSER_WS_URL = os.environ["BROWSER_WS_URL"]
+
+# Wall-clock budget for an entire snapshot. capture_page bounds the page
+# interactions internally (nav/condition/screenshot), but the calls around
+# it — connect, new_context, new_page, context.close — talk to the remote
+# browser server over a pipe and have NO timeout of their own. If that
+# server wedges, one of them hangs forever with no exception and the request
+# never responds. This budget turns that silent hang into a bounded
+# TimeoutError. Set generously over capture_page's own worst case plus
+# connection overhead, so it only ever fires on a genuine hang, never
+# mid-capture.
+SNAPSHOT_TIMEOUT_S = 120
+
+# Timeout for establishing the connection to the browser server. Playwright
+# defaults connect's timeout to 0 (no timeout); setting it makes a dead server
+# fail fast as a PlaywrightError instead of waiting for the wall-clock budget.
+CONNECT_TIMEOUT_MS = 30_000
 
 logger = logging.getLogger(__name__)
 
@@ -225,50 +242,89 @@ async def create_snapshot(
     http_archive_dir = Path(tempfile.mkdtemp())
     try:
         async with async_playwright() as playwright:
-            browser = await playwright.chromium.connect(
-                BROWSER_WS_URL,
-                headers={
-                    "x-playwright-launch-options": json.dumps(
-                        {"channel": BROWSER_CHANNEL, "headless": False}
-                    ),
-                },
-            )
-            # Record a HAR of all network activity, with response bodies
-            # stored as separate entries inside a zip archive
-            # (record_har_content="attach" + a .zip path). The file is flushed
-            # when the context closes.
-            http_archive_path = http_archive_dir / "record.zip"
-            context = await browser.new_context(
-                record_har_path=str(http_archive_path),
-                record_har_content="attach",
-            )
-            page = await context.new_page()
-
-            result = await capture_page(
-                page,
-                str(body.url),
-                condition_type=body.condition_type,
-                condition=body.condition,
-            )
-
-            await context.close()
-
-            # The HAR is written when the context closes. Unpack it only when
-            # navigation committed — otherwise it holds no useful evidence.
-            # Bodies are stored under final_url's hostname prefix so every
-            # artifact shares the one prefix exposed in the API response;
-            # the manifest itself is returned to persist inline as JSON.
-            http_archive = None
-            if result.http_status is not None and http_archive_path.exists():
-                http_archive = await capture_http_archive(
-                    http_archive_path, result.final_url, download=result.download
+            # Bound the whole capture in wall-clock time. capture_page bounds
+            # the page interactions, but connect / new_context / new_page /
+            # context.close talk to the remote browser server over a pipe and
+            # have no timeout of their own — if that server wedges, one of
+            # them hangs forever with no exception and the request never
+            # responds. This converts that silent hang into a bounded
+            # TimeoutError (handled below like any other failure).
+            #
+            # async_playwright() is the *outer* context manager deliberately:
+            # its teardown just kills the local driver subprocess, which is
+            # fast and unaffected by a wedged remote connection. Keeping it
+            # outside the timeout scope means the teardown runs after the
+            # timeout resolves the cancellation, so cleanup can't itself hang.
+            async with asyncio.timeout(SNAPSHOT_TIMEOUT_S):
+                browser = await playwright.chromium.connect(
+                    BROWSER_WS_URL,
+                    # connect's timeout defaults to 0 (no timeout). Bound the
+                    # handshake so a dead server fails fast as a PlaywrightError
+                    # instead of waiting for the wall-clock budget above.
+                    timeout=CONNECT_TIMEOUT_MS,
+                    headers={
+                        "x-playwright-launch-options": json.dumps(
+                            {"channel": BROWSER_CHANNEL, "headless": False}
+                        ),
+                    },
                 )
+                # Record a HAR of all network activity, with response bodies
+                # stored as separate entries inside a zip archive
+                # (record_har_content="attach" + a .zip path). The file is
+                # flushed when the context closes.
+                http_archive_path = http_archive_dir / "record.zip"
+                context = await browser.new_context(
+                    record_har_path=str(http_archive_path),
+                    record_har_content="attach",
+                )
+                page = await context.new_page()
+
+                result = await capture_page(
+                    page,
+                    str(body.url),
+                    condition_type=body.condition_type,
+                    condition=body.condition,
+                )
+
+                await context.close()
+
+                # The HAR is written when the context closes. Unpack it only
+                # when navigation committed — otherwise it holds no useful
+                # evidence. Bodies are stored under final_url's hostname
+                # prefix so every artifact shares the one prefix exposed in
+                # the API response; the manifest itself is returned to persist
+                # inline as JSON.
+                http_archive = None
+                if result.http_status is not None and http_archive_path.exists():
+                    http_archive = await capture_http_archive(
+                        http_archive_path,
+                        result.final_url,
+                        download=result.download,
+                    )
     except PlaywrightError as error:
         # Couldn't even reach the browser — record an empty, failed result.
         logger.error("Browser error for %s: %s", body.url, error.message)
         result = CaptureResult(
             http_status=None,
             error=error.message,
+            condition_met=False,
+            final_url=None,
+            plaintext=None,
+            rendered_html=None,
+            screenshot=None,
+            download=None,
+        )
+        http_archive = None
+    except asyncio.TimeoutError:
+        # The capture exceeded its wall-clock budget — almost always a wedged
+        # remote browser server. Return a failed result the same way the
+        # PlaywrightError branch does, so the caller always gets an answer.
+        logger.error(
+            "Snapshot timed out after %ss for %s", SNAPSHOT_TIMEOUT_S, body.url
+        )
+        result = CaptureResult(
+            http_status=None,
+            error=f"snapshot exceeded {SNAPSHOT_TIMEOUT_S}s wall-clock budget",
             condition_met=False,
             final_url=None,
             plaintext=None,
