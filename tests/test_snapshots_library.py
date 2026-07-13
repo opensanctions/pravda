@@ -2,7 +2,7 @@
 
 These exercise ``pravda.snapshots()`` against rows committed through Pravda's
 own session factory — the real consumption path for a downstream caller.
-Committed rows are removed by a test fixture.
+Each test's commits are rolled back by a fixture.
 """
 
 import dataclasses
@@ -14,8 +14,6 @@ import pytest
 import pravda
 from pravda import Snapshot, snapshots
 from pravda.db import SnapshotRecord, async_session
-
-pytestmark = pytest.mark.usefixtures("clean_snapshots")
 
 
 async def _commit_snapshot(

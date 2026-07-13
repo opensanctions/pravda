@@ -2,11 +2,10 @@ import pytest
 from fsspec.implementations.asyn_wrapper import AsyncFileSystemWrapper
 from fsspec.implementations.local import LocalFileSystem
 from playwright.async_api import async_playwright
-from sqlalchemy import delete
 
 import pravda.db as pravda_db
 import pravda.storage as storage
-from pravda.db import Base, SnapshotRecord
+from pravda.db import Base
 
 engine = pravda_db.engine
 
@@ -23,13 +22,29 @@ async def db_schema():
     await engine.dispose()
 
 
-@pytest.fixture()
-async def clean_snapshots(db_schema):
-    """Remove rows committed through Pravda's own session factory."""
-    yield
-    async with pravda_db.async_session() as session:
-        await session.execute(delete(SnapshotRecord))
-        await session.commit()
+@pytest.fixture(autouse=True)
+async def db_rollback(db_schema):
+    """Isolate each test behind one rolled-back outer transaction.
+
+    Pravda commits through its own session factory. Rebinding that factory to a
+    single connection joined to an outer transaction (via savepoints) lets
+    those commits land in the transaction; rolling it back undoes them all.
+    """
+    async with pravda_db.engine.connect() as connection:
+        transaction = await connection.begin()
+        pravda_db.async_session.configure(
+            bind=connection, join_transaction_mode="create_savepoint"
+        )
+        try:
+            yield
+        finally:
+            try:
+                await transaction.rollback()
+            finally:
+                pravda_db.async_session.configure(
+                    bind=pravda_db.engine,
+                    join_transaction_mode="conditional_savepoint",
+                )
 
 
 @pytest.fixture(scope="session")

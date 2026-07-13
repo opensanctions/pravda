@@ -96,7 +96,7 @@ uv add <package>
 
 Test behavior, not implementation. If renaming an internal function breaks a test, the test is wrong.
 
-- **Real database.** The schema is built once per session with `Base.metadata.create_all` in `tests/conftest.py` (not via Alembic) so tests stay independent of the migration history. Because Pravda owns its sessions and commits through `pravda.db.async_session`, library tests can't wrap a commit in a rollback transaction — the `clean_snapshots` fixture deletes rows committed through that factory after each test. Storage and route interception are the other boundaries.
+- **Real database.** The schema is built once per session with `Base.metadata.create_all` in `tests/conftest.py` (not via Alembic) so tests stay independent of the migration history. Because Pravda owns its sessions and commits through `pravda.db.async_session`, an autouse fixture rebinds that session factory to a single connection joined to one outer transaction (`join_transaction_mode='create_savepoint'`) and rolls it back on teardown, so every test's commits vanish without manual cleanup. Storage and route interception are the other boundaries.
 - **No real network.** Use Playwright's `page.route()` to serve fixture content from `tests/fixtures/`. Deterministic, offline-friendly.
 - **Don't mock internals.** Mock at the boundary only: tmp dirs for storage, route interception for the browser. If you feel the urge to mock something inside a module, the module probably needs a cleaner seam.
 - **Keep it minimal.** Few, meaningful tests that cover the actual workflow. No tests for getters, no tests that just assert a mock was called.

@@ -2,8 +2,8 @@
 
 These exercise ``pravda.snapshot`` and ``pravda.browser()`` end to end against
 the real browser server and test database. Routed pages serve fixture content
-without real network access, and committed rows and artifacts are cleaned up
-by test fixtures.
+without real network access; each test's database commits are rolled back and
+its artifacts land in a temporary store.
 """
 
 from pathlib import Path
@@ -19,7 +19,7 @@ FIXTURES = Path(__file__).parent / "fixtures"
 EXAMPLE_HTML = FIXTURES / "example.html"
 SAMPLE_PDF = FIXTURES / "sample.pdf"
 
-pytestmark = pytest.mark.usefixtures("clean_snapshots", "storage_tmp")
+pytestmark = pytest.mark.usefixtures("storage_tmp")
 
 
 def _fulfill_html(route):
