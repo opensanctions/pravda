@@ -1,9 +1,34 @@
+[build-system]
+requires = ["uv_build>=0.11.26,<0.12.0"]
+build-backend = "uv_build"
+
 [project]
 name = "pravda"
 version = "0.1.0"
-description = "Evidence layer: durable evidence capture of web pages (HAR, screenshots, rendered HTML, plaintext)"
+description = "Durable web evidence capture with a remote browser, Postgres, and content-addressed storage"
 readme = "README.md"
 requires-python = ">=3.13"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "OpenSanctions" }]
+keywords = [
+    "evidence",
+    "web-archiving",
+    "web-capture",
+    "playwright",
+    "har",
+    "forensics",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Internet :: WWW/HTTP :: Browsers",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
 dependencies = [
     "alembic>=1.18.5",
     "asyncpg>=0.31.0",
@@ -12,6 +37,12 @@ dependencies = [
     "playwright>=1.60.0",
     "sqlalchemy[asyncio]>=2.0.50",
 ]
+
+[project.urls]
+Homepage = "https://github.com/opensanctions/pravda"
+Documentation = "https://github.com/opensanctions/pravda#readme"
+Repository = "https://github.com/opensanctions/pravda"
+Issues = "https://github.com/opensanctions/pravda/issues"
 
 [tool.ruff]
 target-version = "py313"

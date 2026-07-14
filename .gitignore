@@ -5,3 +5,8 @@ __pycache__
 data/
 CLAUDE.md
 *.log
+
+# Build artifacts
+dist/
+build/
+*.egg-info/

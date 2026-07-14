@@ -1,46 +1,36 @@
 # Pravda
 
-Pravda is a Python evidence-capture library. It uses a remote Playwright browser to preserve rendered HTML, plaintext, full-page screenshots, metadata, and HAR recordings with response bodies. Snapshots are stored in Postgres and on any fsspec-compatible backend for later inspection or comparison.
+Pravda is a Python library for durable web evidence capture. It drives a
+remote Playwright browser to preserve rendered HTML, plaintext, full-page
+screenshots, metadata, and HAR recordings with response bodies. Snapshots are
+recorded in Postgres and on any fsspec-compatible backend for later inspection
+or comparison.
 
-Pravda is a library, not a service: it connects directly from the caller's process to the browser, database, and storage backend.
+Pravda is a **library, not a service**: it connects directly from the caller's
+process to the browser, database, and storage backend. Applications own that
+infrastructure (see [Infrastructure](#infrastructure)).
 
-## Setup
+- **Python** 3.13+
+- **Browser**: a remote Playwright Chromium WebSocket endpoint (headed Chrome
+  under xvfb). The browser is a client connection; Pravda does not launch one.
+- **Database**: PostgreSQL, upgraded to Pravda's schema with the
+  [migration helper](#database-migrations).
+- **Storage**: any fsspec URL (local path, `s3://`, `gs://`, …) for
+  content-addressed artifacts.
 
-Requires Python 3.13+, [uv](https://docs.astral.sh/uv/), and Docker.
+## Installation
 
 ```bash
-# Start the remote browser and Postgres
-docker compose up -d
-
-# Install dependencies
-uv sync
+pip install pravda
 ```
 
-Compose starts headed Chrome on port `3000` and Postgres on port `5432`. The
-test suite manages the database schema and clears it between runs.
+## Quick start
 
-## Configuration
-
-`PravdaConfig` takes three settings:
-
-- `browser_ws_url` — remote Playwright WebSocket URL
-- `database_url` — async SQLAlchemy Postgres URL
-- `storage_base_path` — fsspec storage URL, such as `./data`, `s3://bucket`, or `gs://bucket`
-
-Applications supply these values when constructing a `Pravda` instance.
-
-## Usage
-
-Build a `PravdaConfig`, construct a long-lived `Pravda`, and use it as an
-async context manager so its database engine is disposed on teardown. Reuse a
-single instance across captures — it owns the pooled engine, session factory,
-and storage backend, while each capture opens its own browser connection.
-
-### Capture a page
-
-By default, Pravda navigates to the URL, waits for the normal `load` state,
-captures the evidence, and persists the result. The complete pipeline is
-bounded by a wall-clock timeout:
+Construct a [`PravdaConfig`](#configuration), build a long-lived `Pravda`, and
+use it as an async context manager so its database engine is disposed on
+teardown. Reuse a single instance across captures — it owns the pooled engine,
+session factory, and storage backend, while each capture opens its own browser
+connection.
 
 ```python
 from pravda import Pravda, PravdaConfig
@@ -55,6 +45,30 @@ async def capture_example():
     async with Pravda(config) as pravda:
         snapshot = await pravda.snapshot("https://example.com")
         print(snapshot.id, snapshot.http_status, snapshot.rendered_html)
+```
+
+## Configuration
+
+`PravdaConfig` takes three settings, supplied explicitly per instance:
+
+- `database_url` — async SQLAlchemy Postgres URL
+  (`postgresql+asyncpg://user:pass@host/db`).
+- `browser_ws_url` — remote Playwright WebSocket URL.
+- `storage_base_path` — fsspec storage URL, such as `./data`, `s3://bucket`,
+  or `gs://bucket`.
+
+## Usage
+
+### Capture a page
+
+By default, Pravda navigates to the URL, waits for the normal `load` state,
+captures the evidence, and persists the result. The complete pipeline is
+bounded by a wall-clock timeout:
+
+```python
+async def capture_example():
+    async with Pravda(config) as pravda:
+        snapshot = await pravda.snapshot("https://example.com")
 ```
 
 For custom navigation or interaction, pass an async `drive(page, url)`
@@ -93,19 +107,68 @@ async def print_history():
             print(snapshot.captured_at, snapshot.http_status)
 ```
 
+## Database migrations
+
+Alembic owns the Pravda schema; the migration scripts ship inside the
+distribution. Bring a database up to the current schema head from application
+startup — the database URL is passed explicitly and **no** `DATABASE_URL`
+environment variable is required:
+
+```python
+import pravda
+
+async def setup():
+    await pravda.migrate("postgresql+asyncpg://user:pass@host/db")
+```
+
+`migrate()` runs the packaged revisions through Alembic (not
+`metadata.create_all`), is safe to call repeatedly (a database already at head
+is a no-op), works from inside a running event loop, and disposes the engine
+it creates. Database and migration failures propagate. There is no downgrade
+or automatic-startup behavior: call `migrate()` where and when you want the
+schema applied.
+
 ## Storage
 
-Artifacts are content-addressed files under `Snapshot.prefix`. The `plaintext`, `rendered_html`, and `screenshot` fields contain filenames; HAR `response.content._file` fields refer to stored response bodies. Consumers read these files directly from the shared fsspec backend.
+Artifacts are content-addressed files under `Snapshot.prefix`. The `plaintext`,
+`rendered_html`, and `screenshot` fields contain filenames; HAR
+`response.content._file` fields refer to stored response bodies. Consumers
+read these files directly from the shared fsspec backend.
+
+## Infrastructure
+
+Applications own the external infrastructure Pravda talks to; Pravda does not
+launch or manage it:
+
+- **Browser** — a remote Playwright Chromium server exposed over WebSocket.
+  See the repository for a reference Docker image that runs headed Chrome under
+  xvfb and accepts launch options through the `x-playwright-launch-options`
+  WebSocket header.
+- **Postgres** — a database the application provisions and
+  [migrates](#database-migrations).
+- **Storage** — an fsspec backend the application points at via
+  `storage_base_path`.
 
 ## Development
 
+Requires [uv](https://docs.astral.sh/uv/) and Docker.
+
 ```bash
+# Start the remote browser and Postgres
+docker compose up -d
+
+# Install dependencies
+uv sync
+
+# Validate
 uv run pytest
 uv run ruff check .
 uv run ruff format --check .
 ```
 
-After changing models in `pravda/db.py`, generate and review a migration:
+The migration scripts live inside the package at `pravda/migrations`. After
+changing models in `pravda/db.py`, the developer `alembic` command reads
+`DATABASE_URL` and points at the packaged scripts via `alembic.ini`:
 
 ```bash
 DATABASE_URL=postgresql+asyncpg://pravda:pravda@localhost:5432/pravda \
@@ -113,3 +176,7 @@ DATABASE_URL=postgresql+asyncpg://pravda:pravda@localhost:5432/pravda \
 DATABASE_URL=postgresql+asyncpg://pravda:pravda@localhost:5432/pravda \
   uv run alembic revision --autogenerate -m "describe the change"
 ```
+
+## License
+
+MIT — see [LICENSE](LICENSE).
