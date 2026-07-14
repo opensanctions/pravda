@@ -1,0 +1,79 @@
+# Build and publish releases to PyPI using Trusted Publishing (OIDC).
+#
+# No API tokens are stored: PyPI trusts this specific workflow via
+# https://docs.pypi.org/trusted-publishers/. One-time setup is required on
+# PyPI and GitHub (see the repository README / release notes).
+#
+# The build and publish steps run in separate jobs so that the build
+# machinery never holds the elevated `id-token: write` permission that
+# Trusted Publishing relies on. PEP 740 provenance attestations are
+# generated and uploaded to PyPI by pypa/gh-action-pypi-publish (on by
+# default) and twine metadata is checked before upload.
+
+name: release
+
+on:
+  release:
+    types: [published]
+
+# Least-privilege default; the publish job narrows this further.
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build distributions
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8
+
+      - name: Install Python
+        run: uv python install
+
+      - name: Build wheel and sdist
+        # Disable uv-only dependency sources so the published package is
+        # guaranteed to build with standard Python packaging tools.
+        run: uv build --no-sources
+
+      - name: Upload distributions
+        uses: actions/upload-artifact@v7
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    name: Publish to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    # Strongly recommended by PyPI: create a "pypi" environment in GitHub
+    # repository settings and protect it (required reviewers, restricted to
+    # the release tag). The environment name must match the trusted publisher
+    # configured on PyPI.
+    environment:
+      name: pypi
+      url: https://pypi.org/p/opensanctions-pravda
+    permissions:
+      # Required for Trusted Publishing and PEP 740 attestations. This is the
+      # only permission granted to the publish job.
+      id-token: write
+    steps:
+      - name: Download distributions
+        uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          # Print file hashes so published artifacts can be audited.
+          print-hash: true
+          # Generate and upload PEP 740 Sigstore attestations (default, but
+          # stated explicitly to document intent).
+          attestations: true

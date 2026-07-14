@@ -21,7 +21,7 @@ infrastructure (see [Infrastructure](#infrastructure)).
 ## Installation
 
 ```bash
-pip install pravda
+pip install opensanctions-pravda
 ```
 
 ## Quick start

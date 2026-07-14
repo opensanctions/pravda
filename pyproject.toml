@@ -3,7 +3,7 @@ requires = ["uv_build>=0.11.26,<0.12.0"]
 build-backend = "uv_build"
 
 [project]
-name = "pravda"
+name = "opensanctions-pravda"
 version = "0.1.0"
 description = "Durable web evidence capture with a remote browser, Postgres, and content-addressed storage"
 readme = "README.md"
@@ -43,6 +43,9 @@ Homepage = "https://github.com/opensanctions/pravda"
 Documentation = "https://github.com/opensanctions/pravda#readme"
 Repository = "https://github.com/opensanctions/pravda"
 Issues = "https://github.com/opensanctions/pravda/issues"
+
+[tool.uv.build-backend]
+module-name = "pravda"
 
 [tool.ruff]
 target-version = "py313"
