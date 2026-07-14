@@ -14,31 +14,32 @@ from pathlib import Path
 import pytest
 from playwright.async_api import async_playwright
 
-import pravda.session as session_module
-import pravda.storage as storage
+import pravda.pravda as pravda_module
+from pravda import PravdaConfig
 from pravda.capture import capture_page
+from pravda.storage import Storage
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
-pytestmark = pytest.mark.usefixtures("storage_tmp")
-
 
 @pytest.mark.asyncio
-async def test_context_close_timeout_keeps_evidence(monkeypatch, tmp_path):
+async def test_context_close_timeout_keeps_evidence(
+    pravda_config: PravdaConfig, storage: Storage, monkeypatch, tmp_path
+):
     """A context.close that exceeds its budget keeps the page evidence,
     marks the snapshot fatal, drops the incomplete HAR, and the forced
     browser cleanup still succeeds."""
     fixture_html = (FIXTURES / "example.html").read_text()
-    monkeypatch.setattr(session_module, "CONTEXT_CLOSE_TIMEOUT_S", 0.01)
+    monkeypatch.setattr(pravda_module, "CONTEXT_CLOSE_TIMEOUT_S", 0.01)
 
     # The test owns its browser connection so it can exercise the forced
     # browser.close() cleanup after the wedged context.close().
     playwright = await async_playwright().start()
     browser = await playwright.chromium.connect(
-        session_module.BROWSER_WS_URL,
+        pravda_config.browser_ws_url,
         headers={
             "x-playwright-launch-options": json.dumps(
-                {"channel": session_module.BROWSER_CHANNEL, "headless": False}
+                {"channel": pravda_module.BROWSER_CHANNEL, "headless": False}
             )
         },
     )
@@ -60,10 +61,10 @@ async def test_context_close_timeout_keeps_evidence(monkeypatch, tmp_path):
                 body=fixture_html, headers={"content-type": "text/html"}
             ),
         )
-        captured = await capture_page(page, "https://example.com")
+        captured = await capture_page(page, "https://example.com", storage)
 
-        result, http_archive = await session_module._finalize_capture(
-            context, captured, http_archive_path, "https://example.com/", {}
+        result, http_archive = await pravda_module._finalize_capture(
+            context, captured, http_archive_path, "https://example.com/", {}, storage
         )
 
         # Page evidence is retained exactly; only a fatal error is added and
@@ -79,7 +80,7 @@ async def test_context_close_timeout_keeps_evidence(monkeypatch, tmp_path):
 
         # The snapshot state is already final; forced browser cleanup remains
         # safe after the context-close timeout.
-        await session_module._close_browser(browser)
+        await pravda_module._close_browser(browser)
         browser = None
     finally:
         if browser is not None:
@@ -88,7 +89,9 @@ async def test_context_close_timeout_keeps_evidence(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_har_processing_timeout_keeps_evidence(browser, monkeypatch, tmp_path):
+async def test_har_processing_timeout_keeps_evidence(
+    browser, storage: Storage, monkeypatch, tmp_path
+):
     """HAR processing that exceeds its budget keeps the page evidence,
     marks the snapshot fatal, and drops the HAR."""
     fixture_html = (FIXTURES / "example.html").read_text()
@@ -105,20 +108,20 @@ async def test_har_processing_timeout_keeps_evidence(browser, monkeypatch, tmp_p
             body=fixture_html, headers={"content-type": "text/html"}
         ),
     )
-    captured = await capture_page(page, "https://example.com")
+    captured = await capture_page(page, "https://example.com", storage)
 
     # capture_page already stored its artifacts; now stall the storage backend
     # and tighten the HAR budget so unpacking the archive exceeds it. Only the
     # HAR body writes are affected.
-    monkeypatch.setattr(session_module, "HAR_PROCESSING_TIMEOUT_S", 0.01)
+    monkeypatch.setattr(pravda_module, "HAR_PROCESSING_TIMEOUT_S", 0.01)
 
     async def slow_pipe_file(path, value, **kwargs):
         await asyncio.sleep(1)
 
     monkeypatch.setattr(storage.fs, "_pipe_file", slow_pipe_file)
 
-    result, http_archive = await session_module._finalize_capture(
-        context, captured, http_archive_path, "https://example.com/", {}
+    result, http_archive = await pravda_module._finalize_capture(
+        context, captured, http_archive_path, "https://example.com/", {}, storage
     )
 
     assert result.http_status == 200

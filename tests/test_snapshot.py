@@ -6,12 +6,10 @@ from playwright.async_api import Browser, Page
 from playwright.async_api import TimeoutError as PlaywrightTimeout
 
 import pravda.capture as capture_module
-import pravda.storage as storage
 from pravda.capture import capture_page
+from pravda.storage import Storage
 
 FIXTURES = Path(__file__).parent / "fixtures"
-
-pytestmark = pytest.mark.usefixtures("storage_tmp")
 
 
 @pytest.fixture()
@@ -25,7 +23,7 @@ async def page(browser: Browser):
 
 
 @pytest.mark.asyncio
-async def test_capture_page_returns_evidence(page: Page):
+async def test_capture_page_returns_evidence(page: Page, storage: Storage):
     """Capture a page using a routed fixture and inspect the evidence."""
     fixture_html = (FIXTURES / "example.html").read_text()
 
@@ -38,7 +36,7 @@ async def test_capture_page_returns_evidence(page: Page):
         ),
     )
 
-    result = await capture_page(page, "https://example.com")
+    result = await capture_page(page, "https://example.com", storage)
 
     assert result.http_status == 200
     assert result.error is None
@@ -54,7 +52,7 @@ async def test_capture_page_returns_evidence(page: Page):
 
 
 @pytest.mark.asyncio
-async def test_capture_page_downloads_pdf(page: Page):
+async def test_capture_page_downloads_pdf(page: Page, storage: Storage):
     """A URL serving application/pdf is captured as a downloaded body.
 
     Chrome's PDF viewer would eat the response body, but the
@@ -73,7 +71,7 @@ async def test_capture_page_downloads_pdf(page: Page):
         ),
     )
 
-    result = await capture_page(page, "https://example.com/doc.pdf")
+    result = await capture_page(page, "https://example.com/doc.pdf", storage)
 
     assert result.http_status == 200
     assert result.error is None
@@ -90,7 +88,7 @@ async def test_capture_page_downloads_pdf(page: Page):
 
 
 @pytest.mark.asyncio
-async def test_capture_page_goto_timeout_skips_captures(page: Page):
+async def test_capture_page_goto_timeout_skips_captures(page: Page, storage: Storage):
     """A navigation that never commits skips captures entirely."""
 
     # Mock goto to raise timeout immediately — the page never commits.
@@ -99,7 +97,7 @@ async def test_capture_page_goto_timeout_skips_captures(page: Page):
 
     page.goto = fake_goto
 
-    result = await capture_page(page, "https://timeout.example.com")
+    result = await capture_page(page, "https://timeout.example.com", storage)
 
     assert result.http_status is None  # unknown — goto never returned
     assert result.error is not None  # Playwright timeout message
@@ -112,7 +110,9 @@ async def test_capture_page_goto_timeout_skips_captures(page: Page):
 
 
 @pytest.mark.asyncio
-async def test_http_commit_captured_when_load_times_out(page: Page, monkeypatch):
+async def test_http_commit_captured_when_load_times_out(
+    page: Page, storage: Storage, monkeypatch
+):
     """HTTP status comes from commit; load times out.
 
     The two-step navigation means we get the HTTP response even when the
@@ -135,7 +135,7 @@ async def test_http_commit_captured_when_load_times_out(page: Page, monkeypatch)
     # `load` waits on the blocked image and times out; DOMContentLoaded fires
     # almost immediately. A short timeout just keeps the test fast.
     monkeypatch.setattr(capture_module, "LOAD_TIMEOUT_MS", 2000)
-    result = await capture_page(page, "https://slow.example.com")
+    result = await capture_page(page, "https://slow.example.com", storage)
 
     # HTTP response was captured from the commit step
     assert result.http_status == 200
@@ -153,7 +153,9 @@ async def test_http_commit_captured_when_load_times_out(page: Page, monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_capture_page_dom_capture_timeout_skips_content(page: Page, monkeypatch):
+async def test_capture_page_dom_capture_timeout_skips_content(
+    page: Page, storage: Storage, monkeypatch
+):
     """A DOM read exceeding its budget drops html/plaintext but keeps screenshot.
 
     CDP session creation, Page.stopLoading, and page.content share one
@@ -179,7 +181,7 @@ async def test_capture_page_dom_capture_timeout_skips_content(page: Page, monkey
 
     page.content = slow_content
 
-    result = await capture_page(page, "https://example.com")
+    result = await capture_page(page, "https://example.com", storage)
 
     assert result.http_status == 200
     assert result.error is None
@@ -192,7 +194,7 @@ async def test_capture_page_dom_capture_timeout_skips_content(page: Page, monkey
 
 @pytest.mark.asyncio
 async def test_capture_page_storage_write_timeout_skips_artifacts(
-    page: Page, monkeypatch
+    page: Page, storage: Storage, monkeypatch
 ):
     """Artifact writes that exceed their budget yield None, not exceptions.
 
@@ -219,7 +221,7 @@ async def test_capture_page_storage_write_timeout_skips_artifacts(
 
     monkeypatch.setattr(storage.fs, "_pipe_file", slow_pipe_file)
 
-    result = await capture_page(page, "https://example.com")
+    result = await capture_page(page, "https://example.com", storage)
 
     # The page committed and loaded; only the writes timed out.
     assert result.http_status == 200

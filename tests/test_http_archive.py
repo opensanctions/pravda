@@ -8,16 +8,15 @@ from pathlib import Path
 import pytest
 
 import pravda.http_archive as har_module
-import pravda.storage as storage
 from pravda.capture import DownloadedBody
 from pravda.http_archive import capture_http_archive
-from pravda.storage import content_prefix
+from pravda.storage import Storage
 
 PAGE_URL = "https://example.com/doc.pdf"
 
 
 @pytest.mark.asyncio
-async def test_download_body_folded_into_har(storage_tmp):
+async def test_download_body_folded_into_har(storage: Storage):
     """A downloaded body patches its manifest entry into a real content._file."""
     pdf_bytes = b"%PDF-1.7 real-ish bytes\n%EOF"
     # One normal entry (body present in the zip) and one download entry whose
@@ -47,7 +46,7 @@ async def test_download_body_folded_into_har(storage_tmp):
         }
     }
 
-    zip_path = storage_tmp / "record.zip"
+    zip_path = Path(storage.base_path) / "record.zip"
     with zipfile.ZipFile(zip_path, "w") as archive:
         archive.writestr("har.har", json.dumps(manifest))
         archive.writestr("abc.html", b"hello")
@@ -55,12 +54,13 @@ async def test_download_body_folded_into_har(storage_tmp):
     manifest = await capture_http_archive(
         zip_path,
         PAGE_URL,
+        storage,
         download=DownloadedBody(
             url=PAGE_URL, data=pdf_bytes, suggested_filename="doc.pdf"
         ),
     )
 
-    prefix = Path(content_prefix(PAGE_URL))
+    prefix = Path(storage.content_prefix(PAGE_URL))
     entries = manifest["log"]["entries"]
 
     # The normal entry is untouched.
@@ -76,7 +76,7 @@ async def test_download_body_folded_into_har(storage_tmp):
 
 @pytest.mark.asyncio
 async def test_download_body_storage_timeout_leaves_entry_bodyless(
-    storage_tmp, monkeypatch
+    storage: Storage, monkeypatch
 ):
     """A download-body write that exceeds its budget leaves the HAR entry bodyless.
 
@@ -98,7 +98,7 @@ async def test_download_body_storage_timeout_leaves_entry_bodyless(
         }
     }
 
-    zip_path = storage_tmp / "record.zip"
+    zip_path = Path(storage.base_path) / "record.zip"
     with zipfile.ZipFile(zip_path, "w") as archive:
         archive.writestr("har.har", json.dumps(manifest))
 
@@ -114,6 +114,7 @@ async def test_download_body_storage_timeout_leaves_entry_bodyless(
     manifest = await capture_http_archive(
         zip_path,
         PAGE_URL,
+        storage,
         download=DownloadedBody(
             url=PAGE_URL, data=pdf_bytes, suggested_filename="doc.pdf"
         ),

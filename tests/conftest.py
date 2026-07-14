@@ -1,64 +1,71 @@
+"""Shared pytest fixtures for the Compose browser and test database."""
+
 import pytest
-from fsspec.implementations.asyn_wrapper import AsyncFileSystemWrapper
-from fsspec.implementations.local import LocalFileSystem
 from playwright.async_api import async_playwright
+from sqlalchemy import delete, text
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-import pravda.db as pravda_db
-import pravda.storage as storage
-from pravda.db import Base
+from pravda import Pravda, PravdaConfig
+from pravda.db import Base, SnapshotRecord
+from pravda.storage import Storage
 
-engine = pravda_db.engine
+DATABASE_URL = "postgresql+asyncpg://pravda:pravda@localhost:5432/pravda"
+BROWSER_WS_URL = "ws://localhost:3000"
+
+
+@pytest.fixture()
+def pravda_config(tmp_path) -> PravdaConfig:
+    """Configuration for a client with an isolated artifact store."""
+    return PravdaConfig(
+        database_url=DATABASE_URL,
+        browser_ws_url=BROWSER_WS_URL,
+        storage_base_path=str(tmp_path),
+    )
 
 
 @pytest.fixture(scope="session")
-async def db_schema():
-    """Build a clean schema for the test session."""
+async def database_engine():
+    """Create the test schema and own its engine for the test session."""
+    engine = create_async_engine(DATABASE_URL)
     async with engine.begin() as connection:
-        await connection.run_sync(Base.metadata.drop_all)
+        await connection.execute(text("DROP SCHEMA public CASCADE"))
+        await connection.execute(text("CREATE SCHEMA public"))
         await connection.run_sync(Base.metadata.create_all)
-    yield
+    yield engine
     async with engine.begin() as connection:
-        await connection.run_sync(Base.metadata.drop_all)
+        await connection.execute(text("DROP SCHEMA public CASCADE"))
+        await connection.execute(text("CREATE SCHEMA public"))
     await engine.dispose()
 
 
-@pytest.fixture(autouse=True)
-async def db_rollback(db_schema):
-    """Isolate each test behind one rolled-back outer transaction.
+@pytest.fixture()
+async def database(database_engine):
+    """Provide database access and clear committed snapshots around each test."""
+    sessionmaker = async_sessionmaker(database_engine, expire_on_commit=False)
+    async with sessionmaker.begin() as session:
+        await session.execute(delete(SnapshotRecord))
+    yield sessionmaker
+    async with sessionmaker.begin() as session:
+        await session.execute(delete(SnapshotRecord))
 
-    Pravda commits through its own session factory. Rebinding that factory to a
-    single connection joined to an outer transaction (via savepoints) lets
-    those commits land in the transaction; rolling it back undoes them all.
-    """
-    async with pravda_db.engine.connect() as connection:
-        transaction = await connection.begin()
-        pravda_db.async_session.configure(
-            bind=connection, join_transaction_mode="create_savepoint"
-        )
-        try:
-            yield
-        finally:
-            try:
-                await transaction.rollback()
-            finally:
-                pravda_db.async_session.configure(
-                    bind=pravda_db.engine,
-                    join_transaction_mode="conditional_savepoint",
-                )
+
+@pytest.fixture()
+async def pravda(database, pravda_config: PravdaConfig):
+    """A configured client with per-test database and storage isolation."""
+    async with Pravda(pravda_config) as instance:
+        yield instance
+
+
+@pytest.fixture()
+def storage(tmp_path):
+    """An isolated content-addressed store pointing at a temporary directory."""
+    return Storage.from_url(str(tmp_path))
 
 
 @pytest.fixture(scope="session")
 async def browser():
     playwright = await async_playwright().start()
-    browser = await playwright.chromium.connect("ws://localhost:3000")
+    browser = await playwright.chromium.connect(BROWSER_WS_URL)
     yield browser
     await browser.close()
     await playwright.stop()
-
-
-@pytest.fixture()
-def storage_tmp(tmp_path, monkeypatch):
-    """Point artifact storage at an isolated local directory."""
-    monkeypatch.setattr(storage, "fs", AsyncFileSystemWrapper(LocalFileSystem()))
-    monkeypatch.setattr(storage, "_base_path", str(tmp_path))
-    return tmp_path

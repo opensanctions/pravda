@@ -15,14 +15,12 @@ services:
       timeout: 5s
       retries: 5
 
-  postgres_dev:
+  postgres:
     image: postgres:18
     environment:
       POSTGRES_USER: pravda
       POSTGRES_PASSWORD: pravda
-      POSTGRES_DB: pravda_dev
-    volumes:
-      - pgdata_dev:/var/lib/postgresql
+      POSTGRES_DB: pravda
     ports:
       - "5432:5432"
     healthcheck:
@@ -30,18 +28,3 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-
-  postgres_test:
-    image: postgres:18
-    environment:
-      POSTGRES_USER: pravda
-      POSTGRES_PASSWORD: pravda
-      POSTGRES_DB: pravda_test
-    volumes:
-      - pgdata_test:/var/lib/postgresql
-    ports:
-      - "5433:5432"
-
-volumes:
-  pgdata_dev:
-  pgdata_test:

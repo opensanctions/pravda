@@ -2,42 +2,36 @@ from pathlib import Path
 
 import pytest
 
-from pravda.storage import (
-    _base_path,
-    content_hash,
-    content_prefix,
-    normalize_hostname,
-    put_blob,
-)
+from pravda.storage import Storage, cas_name, content_hash, normalize_hostname
 
 
 @pytest.mark.asyncio
-async def test_put_blob_stores_at_content_address():
+async def test_put_blob_stores_at_content_address(storage: Storage):
     data = b"hello pravda"
     name = f"{content_hash(data)}.txt"
     url = "https://www.example.com/path"
 
-    stored = await put_blob(name, data, url)
+    stored = await storage.put_blob(name, data, url)
     assert stored == name
 
     # Written under the normalized hostname prefix within the storage backend
-    path = Path(content_prefix(url)) / name
+    path = Path(storage.content_prefix(url)) / name
     assert path.read_bytes() == data
 
 
 @pytest.mark.asyncio
-async def test_put_blob_deduplicates():
+async def test_put_blob_deduplicates(storage: Storage):
     data = b"same content twice"
-    name = f"{content_hash(data)}.mhtml"
+    name = cas_name(data, "mhtml")
 
-    name1 = await put_blob(name, data, "https://example.com")
-    name2 = await put_blob(name, data, "https://example.com")
+    name1 = await storage.put_blob(name, data, "https://example.com")
+    name2 = await storage.put_blob(name, data, "https://example.com")
     assert name1 == name2
 
 
-def test_content_prefix_joins_base_and_hostname():
-    assert content_prefix("https://www.example.com:443/p") == (
-        f"{_base_path}/example.com"
+def test_content_prefix_joins_base_and_hostname(storage: Storage):
+    assert storage.content_prefix("https://www.example.com:443/p") == (
+        f"{storage.base_path}/example.com"
     )
 
 

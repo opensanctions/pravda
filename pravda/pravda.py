@@ -1,38 +1,40 @@
-"""Browser capture orchestration: ``snapshot()``.
+"""The configured Pravda entry point: :class:`Pravda` and :class:`PravdaConfig`.
 
-This module owns the Playwright driver, the remote browser connection, the
-isolated recording context, and the database persistence of a capture. The
-page-level evidence extraction (navigate, wait, screenshot/HTML/text, download
-recovery) lives in :mod:`pravda.capture`; here we wire those pieces into a
-single public entry point:
+This module owns the browser capture orchestration (connect, set up a
+recording context, capture, finalize, persist) and the history query, exposed
+as async methods on a long-lived, explicitly configured :class:`Pravda`
+instance. The page-level evidence extraction (navigate, wait,
+screenshot/HTML/text, download recovery) lives in :mod:`pravda.capture`; the
+HAR unpacking in :mod:`pravda.http_archive`. Here we wire those pieces into
+the public surface:
 
-* :func:`snapshot` — connect, set up a recording context, capture, finalize,
-  persist, all under a wall-clock breaker so a wedged stage becomes a bounded,
-  persisted failure. Without ``drive`` it uses the default behavior (navigate to the
-  normal ``load`` state); with ``drive`` the caller pilots the recording page
-  itself — owning the initial navigation and any readiness or interaction it
-  needs — and Pravda captures whatever state it leaves behind.
+* :meth:`Pravda.snapshot` — connect, set up a recording context, capture,
+  finalize, persist, all under a wall-clock breaker so a wedged stage becomes
+  a bounded, persisted failure. Without ``drive`` it uses the default
+  behavior (navigate to the normal ``load`` state); with ``drive`` the caller
+  pilots the recording page itself — owning the initial navigation and any
+  readiness or interaction it needs — and Pravda captures whatever state it
+  leaves behind.
+* :meth:`Pravda.snapshots` — every exact-URL match, newest first.
 
 There is no readiness-condition abstraction. The default (no ``drive``) is a
 fixed internal readiness (navigate to commit, then wait for the normal
 ``load`` state); callers needing anything else pass a ``drive`` callback and
-use Playwright directly on the recording page. All configuration is read from
-the environment (``BROWSER_WS_URL``, ``DATABASE_URL``,
-``STORAGE_BASE_PATH``); there are no constructor overrides. Pravda owns its
-database sessions: every attempt (success, partial, or failure) is committed
-through :func:`pravda.db.async_session` and returned as a public
-:class:`~pravda.snapshots.Snapshot`.
+use Playwright directly on the recording page. Pravda owns its database
+sessions: every attempt (success, partial, or failure) is committed through
+its own session factory and returned as a public
+:class:`~pravda.snapshots.Snapshot`. A :class:`PravdaConfig` supplies the
+runtime settings for each instance.
 """
 
 import asyncio
 import json
 import logging
-import os
 import shutil
 import tempfile
 import time
 from collections.abc import Awaitable, Callable
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from playwright.async_api import (
@@ -43,16 +45,18 @@ from playwright.async_api import (
     async_playwright,
 )
 from playwright.async_api import Error as PlaywrightError
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from pravda.capture import CaptureResult, capture_current, capture_page
-from pravda.db import SnapshotRecord, async_session
+from pravda.db import SnapshotRecord
 from pravda.http_archive import capture_http_archive
 from pravda.snapshots import Snapshot, from_record
+from pravda.storage import Storage
 
 logger = logging.getLogger(__name__)
 
 BROWSER_CHANNEL = "chrome"
-BROWSER_WS_URL = os.environ["BROWSER_WS_URL"]
 
 # Wall-clock budget for the whole capture pipeline (connect -> setup ->
 # capture -> context.close -> HAR). capture_page bounds the page interactions
@@ -96,6 +100,23 @@ BROWSER_CLOSE_TIMEOUT_S = 5
 DOWNLOAD_TIMEOUT_S = 15
 
 
+@dataclass(frozen=True)
+class PravdaConfig:
+    """Explicit, typed configuration for a :class:`Pravda` instance.
+
+    Attributes:
+        database_url: async SQLAlchemy Postgres URL (e.g.
+            ``postgresql+asyncpg://user:pass@host/db``).
+        browser_ws_url: remote Playwright WebSocket URL.
+        storage_base_path: fsspec storage URL, such as ``./data``,
+            ``s3://bucket``, or ``gs://bucket``.
+    """
+
+    database_url: str
+    browser_ws_url: str
+    storage_base_path: str
+
+
 def _launch_options_header() -> dict[str, str]:
     """Encode the Chrome launch options for the WebSocket server header."""
     return {
@@ -105,10 +126,10 @@ def _launch_options_header() -> dict[str, str]:
     }
 
 
-async def _connect(playwright) -> Browser:
+async def _connect(playwright, browser_ws_url: str) -> Browser:
     """Connect to the remote browser server under a bounded handshake."""
     return await playwright.chromium.connect(
-        BROWSER_WS_URL,
+        browser_ws_url,
         # connect's timeout defaults to 0 (no timeout). Bound the handshake so
         # a dead server fails fast as a PlaywrightError instead of waiting on
         # the wall-clock budget.
@@ -123,6 +144,7 @@ async def _finalize_capture(
     http_archive_path: Path | None,
     url: str,
     stages: dict[str, float],
+    storage: Storage,
 ) -> tuple[CaptureResult, dict | None]:
     """Close the context (flushing the HAR) and unpack the archive.
 
@@ -177,7 +199,7 @@ async def _finalize_capture(
     try:
         async with asyncio.timeout(HAR_PROCESSING_TIMEOUT_S):
             http_archive = await capture_http_archive(
-                http_archive_path, result.final_url, download=result.download
+                http_archive_path, result.final_url, storage, download=result.download
             )
     except asyncio.TimeoutError:
         stages["har"] = time.monotonic() - stage_start
@@ -226,13 +248,15 @@ async def _persist_snapshot(
     result: CaptureResult,
     http_archive: dict | None,
     stages: dict[str, float],
+    sessionmaker: async_sessionmaker,
+    storage: Storage,
 ) -> Snapshot:
     """Map captured evidence onto a ``SnapshotRecord`` row and commit it.
 
     Pravda owns its database session: the row is added and committed through
-    :func:`pravda.db.async_session` (not a caller-supplied session), so a
-    committed attempt is immediately visible to every reader of the shared
-    database — including :func:`pravda.snapshots.snapshots`. Returns the public
+    *sessionmaker* (not a caller-supplied session), so a committed attempt is
+    immediately visible to every reader of the shared database — including
+    :meth:`Pravda.snapshots`. Returns the public
     :class:`~pravda.snapshots.Snapshot` for the committed row. A database
     failure that prevents the commit propagates to the caller.
     """
@@ -247,7 +271,7 @@ async def _persist_snapshot(
         http_archive=http_archive,
     )
     stage_start = time.monotonic()
-    async with async_session() as session:
+    async with sessionmaker() as session:
         session.add(record)
         await session.commit()
     stages["commit"] = time.monotonic() - stage_start
@@ -260,16 +284,19 @@ async def _persist_snapshot(
         record.error,
         " ".join(f"{name}={duration:.2f}s" for name, duration in stages.items()),
     )
-    return from_record(record)
+    return from_record(record, storage)
 
 
 # An async callback that pilots a freshly created recording page: it owns
 # every navigation and interaction (selectors, load states, clicks, form
-# fills), using Playwright directly. Passed to :func:`snapshot` as ``drive``.
+# fills), using Playwright directly. Passed to :meth:`Pravda.snapshot` as
+# ``drive``.
 DriveCallback = Callable[[Page, str], Awaitable[None]]
 
 
-async def _drive_capture(page: Page, url: str, drive: DriveCallback) -> CaptureResult:
+async def _drive_capture(
+    page: Page, url: str, drive: DriveCallback, storage: Storage
+) -> CaptureResult:
     """Run the caller's *drive* callback against *page*, then capture the
     resulting current page state.
 
@@ -287,7 +314,7 @@ async def _drive_capture(page: Page, url: str, drive: DriveCallback) -> CaptureR
     caller finalizes and persists.
 
     A Playwright error or timeout raised by *drive* propagates to the failure
-    handling in :func:`snapshot` (persisted as a failed attempt); any other
+    handling in :func:`_capture` (persisted as a failed attempt); any other
     exception raised by *drive* propagates to the caller untouched once the
     listeners are removed.
     """
@@ -332,45 +359,26 @@ async def _drive_capture(page: Page, url: str, drive: DriveCallback) -> CaptureR
                 logger.warning("Download event did not fire for %s", url)
 
         final_url = download.url if download is not None else page.url
-        return await capture_current(page, final_url, navigation_status, download)
+        return await capture_current(
+            page, final_url, navigation_status, download, storage
+        )
     finally:
         page.remove_listener("download", on_download)
         page.remove_listener("response", on_response)
 
 
-async def snapshot(url: str, *, drive: DriveCallback | None = None) -> Snapshot:
-    """Capture a snapshot of *url* and persist it.
+async def _capture(
+    url: str,
+    *,
+    drive: DriveCallback | None,
+    browser_ws_url: str,
+    sessionmaker: async_sessionmaker,
+    storage: Storage,
+) -> Snapshot:
+    """Run the full capture pipeline for *url* and persist the result.
 
-    Without *drive* this is the default behavior: connect to the remote browser,
-    set up an isolated context recording a HAR, navigate (waiting for the
-    normal ``load`` state), capture the page evidence, flush and process the
-    HAR, then commit the result.
-
-    With *drive*, Pravda still owns the browser connection, the recording
-    context, the page, and persistence — but the caller drives the page.
-    Pravda creates the recording page, hands it (and *url*) to
-    ``await drive(page, url)``, then captures the resulting current page
-    state. The callback has complete control, including the initial
-    navigation and any readiness or interaction it needs (selectors, load
-    states, clicks, form fills); use Playwright directly on *page*. A
-    navigation that hands off to a download (e.g. a PDF) is recovered too:
-    ``goto`` raises ``Download is starting``, so catch it inside *drive* and
-    Pravda observes the download event and captures the bytes, as the default
-    path does internally.
-
-    The whole pipeline runs under a wall-clock breaker so a wedged stage
-    becomes a bounded failure. Browser/navigation/timeout failures —
-    including Playwright errors and timeouts raised from *drive* — are still
-    persisted as :class:`~pravda.snapshots.Snapshot` rows (with ``error`` set
-    and no evidence); a database failure that prevents the commit propagates.
-    An arbitrary (non-Playwright, non-timeout) exception raised by *drive* is
-    not turned into a snapshot failure: Pravda cleans up and re-raises it to
-    the caller.
-
-    The recorded ``url`` is *url* (the subject the caller asked to capture);
-    ``final_url`` reflects where the page actually landed (``page.url``, or
-    the download URL when a download was captured). Returns the public
-    :class:`~pravda.snapshots.Snapshot` for the attempt.
+    This is the body of :meth:`Pravda.snapshot`, factored out with its
+    dependencies (browser URL, session factory, storage) passed explicitly.
     """
     logger.info("Capturing %s", url)
 
@@ -410,7 +418,7 @@ async def snapshot(url: str, *, drive: DriveCallback | None = None) -> Snapshot:
                 # hang into a bounded failure.
                 async with asyncio.timeout(SNAPSHOT_TIMEOUT_S):
                     stage_start = time.monotonic()
-                    browser = await _connect(playwright)
+                    browser = await _connect(playwright, browser_ws_url)
                     stages["connect"] = time.monotonic() - stage_start
 
                     # Record a HAR of all network activity, with response
@@ -435,9 +443,9 @@ async def snapshot(url: str, *, drive: DriveCallback | None = None) -> Snapshot:
 
                     stage_start = time.monotonic()
                     if drive is None:
-                        result = await capture_page(page, url)
+                        result = await capture_page(page, url, storage)
                     else:
-                        result = await _drive_capture(page, url, drive)
+                        result = await _drive_capture(page, url, drive, storage)
                     stages["capture"] = time.monotonic() - stage_start
 
                     # Close the context (flushing the HAR) and unpack the
@@ -451,6 +459,7 @@ async def snapshot(url: str, *, drive: DriveCallback | None = None) -> Snapshot:
                         http_archive_path,
                         url,
                         stages,
+                        storage,
                     )
             finally:
                 # Disconnect the browser on every path once one was connected.
@@ -496,4 +505,113 @@ async def snapshot(url: str, *, drive: DriveCallback | None = None) -> Snapshot:
     finally:
         shutil.rmtree(http_archive_dir, ignore_errors=True)
 
-    return await _persist_snapshot(url, result, http_archive, stages)
+    return await _persist_snapshot(
+        url, result, http_archive, stages, sessionmaker, storage
+    )
+
+
+class Pravda:
+    """Configured, long-lived entry point for evidence capture.
+
+    Owns an async SQLAlchemy engine/session factory and an fsspec storage
+    backend, built from a :class:`PravdaConfig`. Use it as an async context
+    manager so the engine is disposed on teardown:
+
+        config = PravdaConfig(
+            database_url=...,
+            browser_ws_url=...,
+            storage_base_path=...,
+        )
+        async with Pravda(config) as pravda:
+            snapshot = await pravda.snapshot(url)
+            history = await pravda.snapshots(url)
+
+    Browser connections are opened per capture (the browser itself is not a
+    long-lived resource here), so concurrent ``snapshot`` calls are safe: each
+    owns its own browser connection, recording context, temporary directory,
+    and database session, all sharing only the pooled engine and the storage
+    backend.
+    """
+
+    def __init__(self, config: PravdaConfig) -> None:
+        self._config = config
+        self._engine = create_async_engine(config.database_url)
+        self._sessionmaker = async_sessionmaker(self._engine, expire_on_commit=False)
+        self._storage = Storage.from_url(config.storage_base_path)
+        self._browser_ws_url = config.browser_ws_url
+
+    async def __aenter__(self) -> "Pravda":
+        return self
+
+    async def __aexit__(self, *exc_info: object) -> None:
+        await self.aclose()
+
+    async def aclose(self) -> None:
+        """Dispose the owned database engine. Call once when finished.
+
+        Runs automatically on ``async with`` teardown. Storage holds its
+        filesystem configuration, while browser connections close after each
+        capture.
+        """
+        await self._engine.dispose()
+
+    async def snapshot(
+        self, url: str, *, drive: DriveCallback | None = None
+    ) -> Snapshot:
+        """Capture a snapshot of *url* and persist it.
+
+        Without *drive* this is the default behavior: connect to the remote
+        browser, set up an isolated context recording a HAR, navigate (waiting
+        for the normal ``load`` state), capture the page evidence, flush and
+        process the HAR, then commit the result.
+
+        With *drive*, Pravda still owns the browser connection, the recording
+        context, the page, and persistence — but the caller drives the page.
+        Pravda creates the recording page, hands it (and *url*) to
+        ``await drive(page, url)``, then captures the resulting current page
+        state. The callback has complete control, including the initial
+        navigation and any readiness or interaction it needs (selectors, load
+        states, clicks, form fills); use Playwright directly on *page*. A
+        navigation that hands off to a download (e.g. a PDF) is recovered too:
+        ``goto`` raises ``Download is starting``, so catch it inside *drive*
+        and Pravda observes the download event and captures the bytes, as the
+        default path does internally.
+
+        The whole pipeline runs under a wall-clock breaker so a wedged stage
+        becomes a bounded failure. Browser/navigation/timeout failures —
+        including Playwright errors and timeouts raised from *drive* — are
+        still persisted as :class:`~pravda.snapshots.Snapshot` rows (with
+        ``error`` set and no evidence); a database failure that prevents the
+        commit propagates. An arbitrary (non-Playwright, non-timeout) exception
+        raised by *drive* is not turned into a snapshot failure: Pravda cleans
+        up and re-raises it to the caller.
+
+        The recorded ``url`` is *url* (the subject the caller asked to
+        capture); ``final_url`` reflects where the page actually landed
+        (``page.url``, or the download URL when a download was captured).
+        Returns the public :class:`~pravda.snapshots.Snapshot` for the attempt.
+        """
+        return await _capture(
+            url,
+            drive=drive,
+            browser_ws_url=self._browser_ws_url,
+            sessionmaker=self._sessionmaker,
+            storage=self._storage,
+        )
+
+    async def snapshots(self, url: str) -> list[Snapshot]:
+        """Return every snapshot captured for *url*, newest first.
+
+        Exact-URL match only (no normalization). Uses Pravda's own session
+        factory, so callers need no database wiring. Returns public
+        :class:`~pravda.snapshots.Snapshot` values; there is no pagination —
+        every match is returned.
+        """
+        async with self._sessionmaker() as session:
+            result = await session.execute(
+                select(SnapshotRecord)
+                .where(SnapshotRecord.url == url)
+                .order_by(SnapshotRecord.captured_at.desc())
+            )
+            rows = result.scalars().all()
+            return [from_record(row, self._storage) for row in rows]

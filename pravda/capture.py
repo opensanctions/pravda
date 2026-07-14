@@ -10,7 +10,7 @@ from playwright.async_api import Download, Page
 from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import TimeoutError as PlaywrightTimeout
 
-from pravda.storage import STORAGE_WRITE_TIMEOUT_S, cas_name, put_blob
+from pravda.storage import STORAGE_WRITE_TIMEOUT_S, Storage, cas_name
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +65,7 @@ class CaptureResult:
     download: DownloadedBody | None
 
 
-async def capture_page(page: Page, url: str) -> CaptureResult:
+async def capture_page(page: Page, url: str, storage: Storage) -> CaptureResult:
     """Navigate to *url* and capture evidence: HTTP response and
     screenshot/HTML/text blobs.
 
@@ -75,7 +75,7 @@ async def capture_page(page: Page, url: str) -> CaptureResult:
     HTTP response and any partial page evidence. This is an implementation
     detail of the default (no-``drive``) path, not public configuration;
     callers needing anything else pass a ``drive`` callback to
-    :func:`pravda.snapshot` and use Playwright directly on the recording page.
+    :meth:`Pravda.snapshot` and use Playwright directly on the recording page.
 
     The network archive (a HAR recording) is not captured here — it is bound
     to the browser context's lifecycle, so the caller (which owns the
@@ -133,7 +133,7 @@ async def capture_page(page: Page, url: str) -> CaptureResult:
                 final_url = downloaded.url
         elif navigation.http_status is not None:
             plaintext, rendered_html, screenshot = await _capture_artifacts(
-                page, navigation.final_url
+                page, navigation.final_url, storage
             )
         # else: navigation never committed — nothing on the page to capture.
 
@@ -209,7 +209,7 @@ async def _navigate(page: Page, url: str) -> _Navigation:
 
 
 async def _capture_artifacts(
-    page: Page, url: str
+    page: Page, url: str, storage: Storage
 ) -> tuple[str | None, str | None, str | None]:
     """Stop any pending requests, then capture the three artifacts.
 
@@ -257,7 +257,7 @@ async def _capture_artifacts(
         html_blob = html.encode()
         try:
             async with asyncio.timeout(STORAGE_WRITE_TIMEOUT_S):
-                rendered_html = await put_blob(
+                rendered_html = await storage.put_blob(
                     cas_name(html_blob, "html"), html_blob, url
                 )
         except asyncio.TimeoutError:
@@ -272,7 +272,9 @@ async def _capture_artifacts(
         text_blob = text.encode()
         try:
             async with asyncio.timeout(STORAGE_WRITE_TIMEOUT_S):
-                plaintext = await put_blob(cas_name(text_blob, "txt"), text_blob, url)
+                plaintext = await storage.put_blob(
+                    cas_name(text_blob, "txt"), text_blob, url
+                )
         except asyncio.TimeoutError:
             logger.warning("Timeout storing plaintext for %s", url)
 
@@ -296,12 +298,15 @@ async def _capture_artifacts(
         ),
         url,
         "png",
+        storage,
     )
 
     return plaintext, rendered_html, screenshot
 
 
-async def _capture_one(name: str, callback, url: str, extension: str) -> str | None:
+async def _capture_one(
+    name: str, callback, url: str, extension: str, storage: Storage
+) -> str | None:
     """Capture one artifact via *callback* and store the blob.
 
     The capture (``callback``) and the storage write each carry their own
@@ -312,7 +317,7 @@ async def _capture_one(name: str, callback, url: str, extension: str) -> str | N
         blob = data.encode() if isinstance(data, str) else data
         filename = cas_name(blob, extension)
         async with asyncio.timeout(STORAGE_WRITE_TIMEOUT_S):
-            return await put_blob(filename, blob, url)
+            return await storage.put_blob(filename, blob, url)
     except (asyncio.TimeoutError, PlaywrightTimeout):
         logger.warning("Timeout capturing or storing %s for %s", name, url)
         return None
@@ -326,10 +331,11 @@ async def capture_current(
     final_url: str,
     navigation_status: int | None,
     download: Download | None,
+    storage: Storage,
 ) -> CaptureResult:
     """Capture evidence from the page's *current* state, without navigating.
 
-    Used by the ``drive`` path of :func:`pravda.snapshot`: the caller has
+    Used by the ``drive`` path of :meth:`Pravda.snapshot`: the caller has
     already navigated to and interacted with *page* via a ``drive`` callback.
     This captures the page-content artifacts (HTML/plaintext/
     screenshot) from the current DOM, records the main-document status the
@@ -352,7 +358,9 @@ async def capture_current(
     # download (the page holds about:blank) nor a session that never
     # navigated (no document at all).
     if navigation_status is not None and download is None:
-        plaintext, rendered_html, screenshot = await _capture_artifacts(page, final_url)
+        plaintext, rendered_html, screenshot = await _capture_artifacts(
+            page, final_url, storage
+        )
 
     return CaptureResult(
         http_status=navigation_status,

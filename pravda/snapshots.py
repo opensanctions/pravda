@@ -1,13 +1,16 @@
-"""Public snapshot data model and history query API."""
+"""Public snapshot data model.
+
+The history query lives on the configured :class:`pravda.pravda.Pravda`
+instance; this module holds only the immutable public value and the
+row-to-value mapping.
+"""
 
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
 
-from sqlalchemy import select
-
-from pravda.db import SnapshotRecord, async_session
-from pravda.storage import content_prefix
+from pravda.db import SnapshotRecord
+from pravda.storage import Storage
 
 
 @dataclass(frozen=True)
@@ -40,7 +43,7 @@ class Snapshot:
     http_archive: dict | None
 
 
-def from_record(record: SnapshotRecord) -> Snapshot:
+def from_record(record: SnapshotRecord, storage: Storage) -> Snapshot:
     """Map a persisted ``SnapshotRecord`` row onto a public ``Snapshot``.
 
     Resolves the storage ``prefix`` from ``final_url`` here, once, so every
@@ -54,26 +57,9 @@ def from_record(record: SnapshotRecord) -> Snapshot:
         captured_at=record.captured_at,
         http_status=record.http_status,
         error=record.error,
-        prefix=content_prefix(record.final_url) if record.final_url else None,
+        prefix=storage.content_prefix(record.final_url) if record.final_url else None,
         plaintext=record.plaintext,
         rendered_html=record.rendered_html,
         screenshot=record.screenshot,
         http_archive=record.http_archive,
     )
-
-
-async def snapshots(url: str) -> list[Snapshot]:
-    """Return every snapshot captured for *url*, newest first.
-
-    Exact-URL match only (no normalization). Uses Pravda's own database
-    session factory, so callers need no database wiring. Returns public
-    ``Snapshot`` values; there is no pagination — every match is returned.
-    """
-    async with async_session() as session:
-        result = await session.execute(
-            select(SnapshotRecord)
-            .where(SnapshotRecord.url == url)
-            .order_by(SnapshotRecord.captured_at.desc())
-        )
-        rows = result.scalars().all()
-        return [from_record(row) for row in rows]

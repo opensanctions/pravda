@@ -22,7 +22,6 @@ select = ["E", "F", "I", "W"]
 [dependency-groups]
 dev = [
     "pre-commit>=4.6.0",
-    "pytest-env>=1.1.5",
     "pytest>=9.0.3",
     "pytest-asyncio>=1.4.0",
     "ruff>=0.15.16",
@@ -32,9 +31,3 @@ dev = [
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "session"
 asyncio_default_test_loop_scope = "session"
-
-[tool.pytest_env]
-DATABASE_URL = "postgresql+asyncpg://pravda:pravda@localhost:5433/pravda_test"
-TEST_DATABASE_URL = "postgresql+asyncpg://pravda:pravda@localhost:5433/pravda_test"
-BROWSER_WS_URL = "ws://localhost:3000"
-STORAGE_BASE_PATH = "/tmp/pravda-test-blobs"

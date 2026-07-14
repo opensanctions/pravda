@@ -17,13 +17,13 @@ import zipfile
 from pathlib import Path
 
 from pravda.capture import DownloadedBody
-from pravda.storage import STORAGE_WRITE_TIMEOUT_S, cas_name, put_blob
+from pravda.storage import STORAGE_WRITE_TIMEOUT_S, Storage, cas_name
 
 logger = logging.getLogger(__name__)
 
 
 async def capture_http_archive(
-    zip_path: Path, url: str, download: DownloadedBody | None = None
+    zip_path: Path, url: str, storage: Storage, download: DownloadedBody | None = None
 ) -> dict | None:
     """Unzip the Playwright HAR at *zip_path*, store bodies, return the manifest.
 
@@ -45,7 +45,7 @@ async def capture_http_archive(
         recorded = set(archive.namelist())
 
         if download is not None:
-            await _inject_download(manifest, download, url)
+            await _inject_download(manifest, download, url, storage)
 
         for entry in manifest["log"]["entries"]:
             file_name = entry["response"]["content"].get("_file")
@@ -53,12 +53,14 @@ async def capture_http_archive(
             # it is not part of the zip, so skip it here.
             if not file_name or file_name not in recorded:
                 continue
-            await put_blob(file_name, archive.read(file_name), url)
+            await storage.put_blob(file_name, archive.read(file_name), url)
 
     return manifest
 
 
-async def _store_body(download: DownloadedBody, url: str) -> str | None:
+async def _store_body(
+    download: DownloadedBody, url: str, storage: Storage
+) -> str | None:
     """Store a download's bytes as a ``<sha1>.<ext>`` blob, return its name.
 
     The extension comes from ``download.suggested_filename`` — the name Chrome
@@ -70,14 +72,16 @@ async def _store_body(download: DownloadedBody, url: str) -> str | None:
     name = cas_name(download.data, ext)
     try:
         async with asyncio.timeout(STORAGE_WRITE_TIMEOUT_S):
-            await put_blob(name, download.data, url)
+            await storage.put_blob(name, download.data, url)
     except asyncio.TimeoutError:
         logger.warning("Timeout storing download body for %s", download.url)
         return None
     return name
 
 
-async def _inject_download(manifest: dict, download: DownloadedBody, url: str) -> None:
+async def _inject_download(
+    manifest: dict, download: DownloadedBody, url: str, storage: Storage
+) -> None:
     """Patch the manifest entry for *download* to reference its stored body.
 
     Finds the bodyless entry whose request URL matches the download (the one
@@ -93,7 +97,7 @@ async def _inject_download(manifest: dict, download: DownloadedBody, url: str) -
         if content.get("_file"):
             # This entry already has a body; keep looking for the bodyless one.
             continue
-        name = await _store_body(download, url)
+        name = await _store_body(download, url, storage)
         if name is None:
             return
         content["_file"] = name

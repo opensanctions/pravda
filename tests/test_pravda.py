@@ -1,10 +1,10 @@
-"""Direct library tests for the unified ``snapshot`` capture path.
+"""End-to-end tests for the configured Pravda instance's capture path.
 
-These exercise ``pravda.snapshot`` end to end against the real browser server
-and test database: the default (no ``drive``) behavior and the ``drive``
-callback path where the caller pilots the recording page. Routed pages serve
-fixture content without real network access; each test's database commits are
-rolled back and its artifacts land in a temporary store.
+These exercise ``Pravda.snapshot`` against the real browser server and test
+database: the default (no ``drive``) behavior and the ``drive`` callback path
+where the caller pilots the recording page. Routed pages serve fixture
+content without real network access; fixtures isolate the test database and
+artifact store between cases.
 """
 
 from pathlib import Path
@@ -12,15 +12,12 @@ from pathlib import Path
 import pytest
 from playwright.async_api import Error as PlaywrightError
 
-import pravda
-from pravda.snapshots import snapshots
+from pravda import Pravda
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
 EXAMPLE_HTML = FIXTURES / "example.html"
 SAMPLE_PDF = FIXTURES / "sample.pdf"
-
-pytestmark = pytest.mark.usefixtures("storage_tmp")
 
 
 def _fulfill_html(route):
@@ -36,7 +33,7 @@ def _fulfill_pdf(route):
 
 
 @pytest.mark.asyncio
-async def test_snapshot_persists_failed_attempt():
+async def test_snapshot_persists_failed_attempt(pravda: Pravda):
     """A default (no ``drive``) capture of an unreachable URL persists a failed
     Snapshot row.
 
@@ -57,12 +54,12 @@ async def test_snapshot_persists_failed_attempt():
     assert snapshot.http_archive is None
 
     # Committed through Pravda's own session — visible to snapshots().
-    history = await snapshots("https://localhost:39999/")
+    history = await pravda.snapshots("https://localhost:39999/")
     assert any(item.id == snapshot.id for item in history)
 
 
 @pytest.mark.asyncio
-async def test_snapshot_drive_navigates_and_captures():
+async def test_snapshot_drive_navigates_and_captures(pravda: Pravda):
     """A drive callback that routes and navigates leaves Pravda to capture and
     persist the resulting page, including the recorded HAR.
 
@@ -91,12 +88,12 @@ async def test_snapshot_drive_navigates_and_captures():
     assert "Hello from Pravda" in text
 
     # Committed through Pravda's own session — visible to snapshots().
-    history = await snapshots("https://example.com")
+    history = await pravda.snapshots("https://example.com")
     assert any(item.id == snapshot.id for item in history)
 
 
 @pytest.mark.asyncio
-async def test_snapshot_drive_interaction_and_readiness_captured():
+async def test_snapshot_drive_interaction_and_readiness_captured(pravda: Pravda):
     """A drive callback's interactions and readiness checks are part of the
     captured evidence.
 
@@ -144,7 +141,9 @@ async def test_snapshot_drive_interaction_and_readiness_captured():
 
 
 @pytest.mark.asyncio
-async def test_snapshot_drive_download_uses_download_url_and_skips_blank_page():
+async def test_snapshot_drive_download_uses_download_url_and_skips_blank_page(
+    pravda: Pravda,
+):
     """A drive callback that navigates to a PDF (handed off to Chrome's
     downloader) records the download's URL and skips the meaningless
     about:blank artifacts, matching the default PDF path.
@@ -179,7 +178,7 @@ async def test_snapshot_drive_download_uses_download_url_and_skips_blank_page():
 
 
 @pytest.mark.asyncio
-async def test_snapshot_drive_playwright_error_persists_failed_attempt():
+async def test_snapshot_drive_playwright_error_persists_failed_attempt(pravda: Pravda):
     """A Playwright error raised from the drive callback follows snapshot's
     established failed-attempt persistence: a Snapshot row with the error and
     no evidence (the navigation failed fast against a closed local port)."""
@@ -199,23 +198,25 @@ async def test_snapshot_drive_playwright_error_persists_failed_attempt():
     assert snapshot.screenshot is None
     assert snapshot.http_archive is None
 
-    history = await snapshots("https://localhost:39999/")
+    history = await pravda.snapshots("https://localhost:39999/")
     assert any(item.id == snapshot.id for item in history)
 
 
 @pytest.mark.asyncio
-async def test_snapshot_drive_requires_navigation():
+async def test_snapshot_drive_requires_navigation(pravda: Pravda):
     async def drive(page, url):
         pass
 
     with pytest.raises(ValueError, match="before navigating"):
         await pravda.snapshot("https://example.com", drive=drive)
 
-    assert await snapshots("https://example.com") == []
+    assert await pravda.snapshots("https://example.com") == []
 
 
 @pytest.mark.asyncio
-async def test_snapshot_drive_arbitrary_error_propagates_and_persists_nothing():
+async def test_snapshot_drive_arbitrary_error_propagates_and_persists_nothing(
+    pravda: Pravda,
+):
     """A non-Playwright exception raised by the drive callback is not turned
     into a snapshot failure: it propagates to the caller and persists nothing."""
 
@@ -228,4 +229,4 @@ async def test_snapshot_drive_arbitrary_error_propagates_and_persists_nothing():
         await pravda.snapshot("https://example.com", drive=drive)
 
     # Nothing was persisted — the exception escaped before persistence.
-    assert await snapshots("https://example.com") == []
+    assert await pravda.snapshots("https://example.com") == []

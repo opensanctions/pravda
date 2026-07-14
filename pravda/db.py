@@ -1,14 +1,9 @@
-import os
 import uuid
 from datetime import datetime
 
 from sqlalchemy import DateTime, Integer, Text, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
-
-engine = create_async_engine(os.environ["DATABASE_URL"])
-async_session = async_sessionmaker(engine, expire_on_commit=False)
 
 
 class Base(DeclarativeBase):

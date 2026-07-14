@@ -15,20 +15,21 @@ Pravda is an async Python library for capturing durable web evidence with a remo
 - Browser launch options are sent through the `x-playwright-launch-options` WebSocket header; do not add custom server JavaScript.
 - Postgres access is async SQLAlchemy. Alembic owns the schema; library code must not create it.
 - Store artifacts through fsspec using content-addressed filenames.
-- Read `BROWSER_WS_URL`, `DATABASE_URL`, and `STORAGE_BASE_PATH` from the environment in the module that uses them; do not inject configuration through constructors.
+- Runtime configuration is explicit and instance-scoped. Applications construct `PravdaConfig(database_url, browser_ws_url, storage_base_path)` and pass it to a long-lived `Pravda` instance, which owns its engine, session factory, and storage. Alembic reads `DATABASE_URL` from its command environment.
 - Add dependencies with `uv add`; do not edit `pyproject.toml` manually.
 - Do not create git commits; the user manages version control.
 
 ## Public behavior
 
-The public API is exported from `pravda`: `snapshot`, `snapshots`, and the frozen `Snapshot` value.
+The public API is exported from `pravda`: the configured `Pravda` instance, the `PravdaConfig` it takes, and the frozen `Snapshot` value. `Pravda` is used as an async context manager and exposes async `snapshot()` and `snapshots()` methods.
 
 - Without `drive`, `snapshot()` owns navigation and the complete capture pipeline.
 - The complete pipeline must remain bounded by a wall-clock timeout.
 - With `drive(page, url)`, the callback owns initial navigation and interaction; Pravda still owns capture, persistence, and cleanup.
 - Browser, navigation, and Playwright callback failures are persisted as failed snapshots. Non-Playwright callback exceptions propagate and persist nothing.
-- Pravda owns its database sessions and commits capture attempts. Callers require no database wiring.
+- `Pravda` owns its database sessions and commits capture attempts. Callers require no database wiring.
 - `snapshots(url)` returns all exact-URL matches newest first, without pagination.
+- Concurrent `snapshot()` calls are safe: each opens its own browser connection, recording context, temporary directory, and database session.
 
 ## Downloads
 
@@ -39,7 +40,10 @@ Chrome is configured with `AlwaysOpenPdfExternally`, so PDFs and similar viewer-
 After changing `pravda/db.py`, generate and review a migration:
 
 ```bash
-uv run --env-file .env alembic revision --autogenerate -m "describe the change"
+DATABASE_URL=postgresql+asyncpg://pravda:pravda@localhost:5432/pravda \
+  uv run alembic upgrade head
+DATABASE_URL=postgresql+asyncpg://pravda:pravda@localhost:5432/pravda \
+  uv run alembic revision --autogenerate -m "describe the change"
 ```
 
 When a migration creates a `postgresql.ENUM`, manage the type explicitly in both `upgrade` and `downgrade`. Tests use `Base.metadata.create_all` rather than Alembic migrations.
@@ -48,7 +52,7 @@ When a migration creates a `postgresql.ENUM`, manage the type explicitly in both
 
 - Run against the Compose browser and test Postgres; do not use the public internet.
 - Use Playwright `page.route()` and files in `tests/fixtures/` for web content.
-- Use the real database with the transaction-isolation fixtures in `tests/conftest.py`.
+- Use the real test database and configured client fixtures in `tests/conftest.py`.
 - Mock boundaries only, such as temporary storage and browser routing; do not mock Pravda internals.
 - Test public behavior rather than implementation details.
 - Keep the test suite small and meaningful.
