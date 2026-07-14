@@ -1,8 +1,6 @@
 services:
   playwright:
-    build:
-      context: .
-      dockerfile: Dockerfile.browser
+    build: .
     init: true
     ports:
       - "3000:3000"
