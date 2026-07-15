@@ -23,6 +23,10 @@ DOWNLOAD_TIMEOUT_S = 15
 DRIVE_TIMEOUT_S = 60
 
 
+class DriveTimeoutError(Exception):
+    """The caller's drive callback exceeded its wall-clock budget."""
+
+
 def is_http_url(url: str) -> bool:
     """Whether *url* is an HTTP(S) URL with a hostname."""
     try:
@@ -279,8 +283,13 @@ async def capture_driven(
 ) -> CaptureResult:
     """Run *drive*, then capture the resulting HTTP(S) page or download."""
     async with _PageObserver(page) as observer:
-        async with asyncio.timeout(DRIVE_TIMEOUT_S):
-            await drive(page, url)
+        try:
+            async with asyncio.timeout(DRIVE_TIMEOUT_S):
+                await drive(page, url)
+        except asyncio.TimeoutError as error:
+            raise DriveTimeoutError(
+                f"drive callback exceeded {DRIVE_TIMEOUT_S}s budget"
+            ) from error
 
         if (
             page.url == "about:blank"

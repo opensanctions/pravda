@@ -62,8 +62,8 @@ async def capture_example():
 ### Capture a page
 
 By default, Pravda navigates to the URL, waits for the normal `load` state,
-captures the evidence, and persists the result. Every phase of the complete
-pipeline has an explicit wall-clock deadline:
+captures the evidence, and persists the result. Capture and HAR finalization
+share one wall-clock deadline; persistence is bounded separately:
 
 ```python
 async def capture_example():
@@ -87,8 +87,9 @@ async def capture_results():
 
 `page` is a real `playwright.async_api.Page`, so selectors, clicks, form
 fills, and other Playwright operations are available. Playwright errors and
-timeouts from `drive` are persisted as failed snapshots. Other callback
-exceptions propagate and persist nothing.
+timeouts from `drive` are persisted as failed snapshots. A recording-context
+close failure also persists a failed snapshot without artifacts because its HAR
+could not be finalized. Other callback exceptions propagate and persist nothing.
 
 Chrome is configured to download PDFs instead of opening its viewer. In custom
 callbacks, `page.goto()` may therefore raise `Download is starting`; catch

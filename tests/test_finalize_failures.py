@@ -1,4 +1,4 @@
-"""Finalization-stage failure and timeout semantics."""
+"""Atomic failure semantics for HAR finalization."""
 
 import asyncio
 from pathlib import Path
@@ -8,7 +8,7 @@ from playwright.async_api import Error as PlaywrightError
 
 import pravda.pravda as pravda_module
 from pravda import Pravda
-from pravda.capture import CaptureResult, capture_page
+from pravda.capture import capture_page
 from pravda.storage import Storage
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -21,82 +21,39 @@ def _fulfill_html(route):
     )
 
 
-async def _capture_example(page, storage: Storage) -> CaptureResult:
+async def _record_example(browser, storage: Storage, tmp_path):
+    http_archive_path = tmp_path / "record.zip"
+    context = await browser.new_context(
+        record_har_path=str(http_archive_path),
+        record_har_content="attach",
+    )
+    page = await context.new_page()
     await page.route("https://example.com", _fulfill_html)
-    return await capture_page(page, "https://example.com", storage)
+    result = await capture_page(page, "https://example.com", storage)
+    return context, result, http_archive_path
 
 
 @pytest.mark.asyncio
-async def test_context_close_failure_keeps_evidence(
-    browser, storage: Storage, tmp_path
-):
-    """A failed context.close keeps evidence and records a fatal error."""
-    http_archive_path = tmp_path / "record.zip"
-    context = await browser.new_context(
-        record_har_path=str(http_archive_path),
-        record_har_content="attach",
-    )
-    page = await context.new_page()
-    captured = await _capture_example(page, storage)
+async def test_context_close_failure_discards_evidence(browser, storage, tmp_path):
+    """An unfinalized recording context invalidates all captured evidence."""
+    context, captured, path = await _record_example(browser, storage, tmp_path)
 
     async def failing_close():
         raise OSError("context teardown lost the connection")
 
     context.close = failing_close
-
     result, http_archive = await pravda_module._finalize_capture(
-        context, captured, http_archive_path, "https://example.com/", {}, storage
+        context, captured, path, "https://example.com/", storage
     )
 
-    assert result.http_status == 200
-    assert result.final_url == "https://example.com/"
-    assert result.rendered_html == captured.rendered_html
-    assert result.plaintext == captured.plaintext
-    assert result.screenshot == captured.screenshot
-    assert "context close failed" in result.error
-    assert http_archive is None
-
-
-@pytest.mark.asyncio
-async def test_context_close_failure_composes_with_prior_error(
-    browser, storage: Storage, tmp_path
-):
-    """A context.close failure is composed onto a prior capture error."""
-    http_archive_path = tmp_path / "record.zip"
-    context = await browser.new_context(
-        record_har_path=str(http_archive_path),
-        record_har_content="attach",
+    assert result.error == (
+        "browser context close failed: context teardown lost the connection"
     )
-    page = await context.new_page()
-    captured = await _capture_example(page, storage)
-    prior_error = "Timeout 30000ms exceeded waiting for 'load'"
-    captured_with_error = CaptureResult(
-        http_status=captured.http_status,
-        error=prior_error,
-        final_url=captured.final_url,
-        plaintext=captured.plaintext,
-        rendered_html=captured.rendered_html,
-        screenshot=captured.screenshot,
-        download=None,
-    )
-
-    async def failing_close():
-        raise OSError("context teardown lost the connection")
-
-    context.close = failing_close
-
-    result, http_archive = await pravda_module._finalize_capture(
-        context,
-        captured_with_error,
-        http_archive_path,
-        "https://example.com/",
-        {},
-        storage,
-    )
-
-    assert prior_error in result.error
-    assert "context close failed" in result.error
-    assert result.rendered_html == captured.rendered_html
+    assert result.http_status is None
+    assert result.final_url is None
+    assert result.plaintext is None
+    assert result.rendered_html is None
+    assert result.screenshot is None
     assert http_archive is None
 
 
@@ -104,16 +61,8 @@ async def test_context_close_failure_composes_with_prior_error(
 async def test_har_processing_timeout_propagates(
     browser, storage: Storage, tmp_path, monkeypatch
 ):
-    """A HAR processing timeout fails finalization."""
-    http_archive_path = tmp_path / "record.zip"
-    context = await browser.new_context(
-        record_har_path=str(http_archive_path),
-        record_har_content="attach",
-    )
-    page = await context.new_page()
-    captured = await _capture_example(page, storage)
-
-    # Artifacts are already stored; stall the backend and tighten the HAR budget.
+    """A HAR storage timeout fails the operation rather than persisting a fallback."""
+    context, captured, path = await _record_example(browser, storage, tmp_path)
     monkeypatch.setattr(pravda_module, "HAR_PROCESSING_TIMEOUT_S", 0.01)
 
     async def slow_pipe_file(path, value, **kwargs):
@@ -123,7 +72,7 @@ async def test_har_processing_timeout_propagates(
 
     with pytest.raises(asyncio.TimeoutError):
         await pravda_module._finalize_capture(
-            context, captured, http_archive_path, "https://example.com/", {}, storage
+            context, captured, path, "https://example.com/", storage
         )
 
 

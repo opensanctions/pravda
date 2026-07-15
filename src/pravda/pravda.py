@@ -5,19 +5,18 @@ import json
 import logging
 import shutil
 import tempfile
-import time
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 
-from playwright.async_api import Browser, BrowserContext, Page, async_playwright
+from playwright.async_api import Browser, BrowserContext, async_playwright
 from playwright.async_api import Error as PlaywrightError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from pravda.capture import (
-    DRIVE_TIMEOUT_S,
     CaptureResult,
     DriveCallback,
+    DriveTimeoutError,
     capture_driven,
     capture_page,
     is_http_url,
@@ -31,16 +30,14 @@ logger = logging.getLogger(__name__)
 
 BROWSER_CHANNEL = "chrome"
 
-# Each pipeline phase has its own wall-clock limit. Browser context failures keep
-# page evidence but discard the HAR; cleanup is best-effort. Storage, commit,
+# Capture and finalization form one atomic evidence operation. A context-close
+# failure invalidates the result; cleanup is best-effort. Storage, persistence,
 # non-Playwright callback failures, and cancellation propagate.
-PLAYWRIGHT_START_TIMEOUT_S = 10
+SNAPSHOT_TIMEOUT_S = 120
 CONNECT_TIMEOUT_MS = 10_000
-SETUP_TIMEOUT_S = 10
-CONTEXT_CLOSE_TIMEOUT_S = 10
+CONTEXT_CLOSE_TIMEOUT_S = 30
 HAR_PROCESSING_TIMEOUT_S = 20
-BROWSER_CLOSE_TIMEOUT_S = 5
-PLAYWRIGHT_STOP_TIMEOUT_S = 5
+CLEANUP_TIMEOUT_S = 5
 PERSIST_TIMEOUT_S = 15
 
 
@@ -75,136 +72,77 @@ def _empty_result(error: str | None = None) -> CaptureResult:
     )
 
 
-async def _start_playwright(stages: dict[str, float]):
-    """Start the Playwright driver within its deadline."""
-    stage_start = time.monotonic()
-    async with asyncio.timeout(PLAYWRIGHT_START_TIMEOUT_S):
-        playwright = await async_playwright().start()
-    stages["startup"] = time.monotonic() - stage_start
-    return playwright
-
-
-async def _stop_playwright(playwright, stages: dict[str, float]) -> None:
-    """Stop the Playwright driver, logging cleanup failures."""
-    stage_start = time.monotonic()
-    try:
-        async with asyncio.timeout(PLAYWRIGHT_STOP_TIMEOUT_S):
-            await playwright.stop()
-    except asyncio.TimeoutError:
-        logger.warning(
-            "playwright.stop exceeded %ss budget; driver left running",
-            PLAYWRIGHT_STOP_TIMEOUT_S,
-        )
-    except Exception as error:  # best-effort: never alter finalized state
-        logger.warning("playwright.stop failed: %s", error)
-    stages["shutdown"] = time.monotonic() - stage_start
-
-
-async def _connect(
-    playwright, browser_ws_url: str, stages: dict[str, float]
-) -> Browser:
-    """Connect to the remote browser server under a bounded handshake."""
-    stage_start = time.monotonic()
-    browser = await playwright.chromium.connect(
+async def _connect(playwright, browser_ws_url: str) -> Browser:
+    """Connect to the remote browser server."""
+    return await playwright.chromium.connect(
         browser_ws_url,
         # connect's timeout defaults to 0 (no timeout). Bound the handshake so
         # a dead server fails fast as a PlaywrightError instead of hanging.
         timeout=CONNECT_TIMEOUT_MS,
         headers=_launch_options_header(),
     )
-    stages["connect"] = time.monotonic() - stage_start
-    return browser
-
-
-async def _setup(
-    browser: Browser, http_archive_dir: Path, stages: dict[str, float]
-) -> tuple[BrowserContext, Page, Path]:
-    """Create a HAR-recording context and page within the setup deadline."""
-    http_archive_path = http_archive_dir / "record.zip"
-    stage_start = time.monotonic()
-    async with asyncio.timeout(SETUP_TIMEOUT_S):
-        context = await browser.new_context(
-            record_har_path=str(http_archive_path),
-            record_har_content="attach",
-        )
-        page = await context.new_page()
-    stages["setup"] = time.monotonic() - stage_start
-    return context, page, http_archive_path
-
-
-def _compose_error(existing: str | None, addition: str) -> str:
-    """Append a finalization error to an existing capture error."""
-    if existing:
-        return f"{existing}; {addition}"
-    return addition
 
 
 async def _finalize_capture(
     context: BrowserContext,
     result: CaptureResult,
-    http_archive_path: Path | None,
+    http_archive_path: Path,
     url: str,
-    stages: dict[str, float],
     storage: Storage,
 ) -> tuple[CaptureResult, dict | None]:
-    """Flush and process the HAR, preserving page evidence on failure."""
-    stage_start = time.monotonic()
-    close_error: str | None = None
+    """Close the context and process its HAR as an atomic evidence operation."""
     try:
         async with asyncio.timeout(CONTEXT_CLOSE_TIMEOUT_S):
             await context.close()
     except asyncio.TimeoutError:
-        close_error = (
-            f"browser context close exceeded {CONTEXT_CLOSE_TIMEOUT_S}s "
-            f"budget; http archive discarded"
-        )
+        error = f"browser context close exceeded {CONTEXT_CLOSE_TIMEOUT_S}s budget"
+        logger.error("%s for %s", error, url)
+        return _empty_result(error), None
     except Exception as exception:
-        close_error = (
-            f"browser context close failed ({exception}); http archive discarded"
-        )
-    stages["close"] = time.monotonic() - stage_start
-    if close_error is not None:
-        logger.error("%s for %s", close_error, url)
-        return (
-            replace(result, error=_compose_error(result.error, close_error)),
-            None,
-        )
+        error = f"browser context close failed: {exception}"
+        logger.error("%s for %s", error, url)
+        return _empty_result(error), None
 
-    if (
-        result.http_status is None
-        or http_archive_path is None
-        or (not http_archive_path.exists())
-    ):
+    if result.http_status is None:
         return result, None
+    if not http_archive_path.exists():
+        error = "browser context closed without producing an HTTP archive"
+        logger.error("%s for %s", error, url)
+        return _empty_result(error), None
 
-    stage_start = time.monotonic()
     async with asyncio.timeout(HAR_PROCESSING_TIMEOUT_S):
         http_archive = await capture_http_archive(
             http_archive_path, result.final_url, storage, download=result.download
         )
-    stages["har"] = time.monotonic() - stage_start
+    if http_archive is None:
+        error = "browser context produced an invalid HTTP archive"
+        logger.error("%s for %s", error, url)
+        return _empty_result(error), None
     return result, http_archive
 
 
-async def _close_browser(browser: Browser) -> None:
-    """Close a browser, logging cleanup failures."""
-    try:
-        async with asyncio.timeout(BROWSER_CLOSE_TIMEOUT_S):
-            await browser.close()
-    except asyncio.TimeoutError:
-        logger.warning(
-            "browser.close exceeded %ss budget; cleanup abandoned",
-            BROWSER_CLOSE_TIMEOUT_S,
-        )
-    except Exception as error:  # best-effort: never alter finalized state
-        logger.warning("browser.close failed: %s", error)
+async def _cleanup(browser: Browser | None, playwright) -> None:
+    """Best-effort cleanup that never changes the capture outcome."""
+    operations = []
+    if browser is not None:
+        operations.append(("browser.close", browser.close))
+    if playwright is not None:
+        operations.append(("playwright.stop", playwright.stop))
+
+    for name, operation in operations:
+        try:
+            async with asyncio.timeout(CLEANUP_TIMEOUT_S):
+                await operation()
+        except asyncio.TimeoutError:
+            logger.warning("%s exceeded %ss budget", name, CLEANUP_TIMEOUT_S)
+        except Exception as error:
+            logger.warning("%s failed: %s", name, error)
 
 
 async def _persist_snapshot(
     url: str,
     result: CaptureResult,
     http_archive: dict | None,
-    stages: dict[str, float],
     sessionmaker: async_sessionmaker,
     storage: Storage,
 ) -> Snapshot:
@@ -219,20 +157,17 @@ async def _persist_snapshot(
         screenshot=result.screenshot,
         http_archive=http_archive,
     )
-    stage_start = time.monotonic()
     async with asyncio.timeout(PERSIST_TIMEOUT_S):
         async with sessionmaker() as session:
             session.add(record)
             await session.commit()
-    stages["commit"] = time.monotonic() - stage_start
     logger.info(
-        "Captured %s id=%s: status=%s http_archive=%s error=%s timings=%s",
+        "Captured %s id=%s: status=%s http_archive=%s error=%s",
         record.url,
         record.id,
         record.http_status,
         record.http_archive is not None,
         record.error,
-        " ".join(f"{name}={duration:.2f}s" for name, duration in stages.items()),
     )
     return from_record(record, storage)
 
@@ -242,57 +177,50 @@ async def _capture_to_result(
     *,
     drive: DriveCallback | None,
     browser_ws_url: str,
-    stages: dict[str, float],
     http_archive_dir: Path,
     storage: Storage,
 ) -> tuple[CaptureResult, dict | None]:
-    """Capture and finalize evidence, then clean up browser resources."""
-    try:
-        playwright = await _start_playwright(stages)
-    except Exception as error:
-        logger.error("Playwright startup failed for %s: %s", url, error)
-        return _empty_result(f"playwright startup failed: {error}"), None
-
-    result = _empty_result()
-    http_archive: dict | None = None
+    """Capture and finalize one atomic evidence bundle."""
+    playwright = None
     browser: Browser | None = None
+    deadline = asyncio.timeout(SNAPSHOT_TIMEOUT_S)
     try:
-        timeout_message: str | None = None
         try:
-            browser = await _connect(playwright, browser_ws_url, stages)
-            timeout_message = f"context/page setup exceeded {SETUP_TIMEOUT_S}s budget"
-            context, page, http_archive_path = await _setup(
-                browser, http_archive_dir, stages
-            )
-            capture_start = time.monotonic()
-            if drive is None:
-                result = await capture_page(page, url, storage)
-            else:
-                timeout_message = f"drive callback exceeded {DRIVE_TIMEOUT_S}s budget"
-                result = await capture_driven(page, url, drive, storage)
-            stages["capture"] = time.monotonic() - capture_start
+            async with deadline:
+                playwright = await async_playwright().start()
+                browser = await _connect(playwright, browser_ws_url)
+
+                http_archive_path = http_archive_dir / "record.zip"
+                context = await browser.new_context(
+                    record_har_path=str(http_archive_path),
+                    record_har_content="attach",
+                )
+                page = await context.new_page()
+
+                if drive is None:
+                    result = await capture_page(page, url, storage)
+                else:
+                    result = await capture_driven(page, url, drive, storage)
+
+                return await _finalize_capture(
+                    context, result, http_archive_path, url, storage
+                )
+        except DriveTimeoutError as error:
+            logger.error("%s for %s", error, url)
+            return _empty_result(str(error)), None
         except PlaywrightError as error:
             logger.error("Browser error for %s: %s", url, error.message)
-            result = _empty_result(error.message)
+            return _empty_result(error.message), None
         except asyncio.TimeoutError:
-            message = timeout_message or "capture exceeded its budget"
-            logger.error("%s for %s", message, url)
-            result = _empty_result(message)
-        else:
-            result, http_archive = await _finalize_capture(
-                context,
-                result,
-                http_archive_path,
-                url,
-                stages,
-                storage,
-            )
+            # Only the outer breaker is a persisted browser failure. Inner
+            # storage and HAR-processing timeouts remain operational errors.
+            if not deadline.expired():
+                raise
+            error = f"snapshot exceeded {SNAPSHOT_TIMEOUT_S}s wall-clock budget"
+            logger.error("%s for %s", error, url)
+            return _empty_result(error), None
     finally:
-        if browser is not None:
-            await _close_browser(browser)
-        await _stop_playwright(playwright, stages)
-
-    return result, http_archive
+        await _cleanup(browser, playwright)
 
 
 async def _capture(
@@ -306,23 +234,19 @@ async def _capture(
     """Capture *url* and persist the result."""
     logger.info("Capturing %s", url)
 
-    stages: dict[str, float] = {}
     http_archive_dir = Path(tempfile.mkdtemp())
     try:
         result, http_archive = await _capture_to_result(
             url,
             drive=drive,
             browser_ws_url=browser_ws_url,
-            stages=stages,
             http_archive_dir=http_archive_dir,
             storage=storage,
         )
     finally:
         shutil.rmtree(http_archive_dir, ignore_errors=True)
 
-    return await _persist_snapshot(
-        url, result, http_archive, stages, sessionmaker, storage
-    )
+    return await _persist_snapshot(url, result, http_archive, sessionmaker, storage)
 
 
 class Pravda:
@@ -358,10 +282,10 @@ class Pravda:
         *drive*, the callback owns navigation and interaction on the supplied
         recording page; Pravda then captures its current state.
 
-        Each phase is bounded. Playwright failures are persisted, while storage,
-        non-Playwright callback, and persistence errors propagate. Browser
-        context-finalization failures retain captured page evidence but discard
-        the HAR.
+        The capture and HAR finalization have one wall-clock bound. Playwright
+        and context-close failures are persisted without artifacts; storage,
+        non-Playwright callback, and persistence errors propagate. Cleanup is
+        best-effort.
         """
         if not is_http_url(url):
             raise ValueError(f"snapshot URL must be http(s), got {url!r}")
