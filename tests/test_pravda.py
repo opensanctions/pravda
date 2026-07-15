@@ -61,7 +61,7 @@ async def test_snapshot_drive_navigates_and_captures(pravda: Pravda):
     assert snapshot.rendered_html.endswith(".html")
     assert snapshot.plaintext.endswith(".txt")
     assert snapshot.http_archive is not None
-    text = (Path(snapshot.prefix) / snapshot.plaintext).read_text()
+    text = Path(snapshot.plaintext).read_text()
     assert "Hello from Pravda" in text
 
     history = await pravda.snapshots("https://example.com")
@@ -103,7 +103,7 @@ async def test_snapshot_drive_interaction_and_readiness_captured(pravda: Pravda)
     assert snapshot.http_status == 200
     assert snapshot.error is None
     assert snapshot.plaintext.endswith(".txt")
-    text = (Path(snapshot.prefix) / snapshot.plaintext).read_text()
+    text = Path(snapshot.plaintext).read_text()
     assert "Before interaction" in text
     assert "After interaction secret" in text
 

@@ -131,12 +131,14 @@ schema applied.
 
 ## Storage
 
-Artifacts are content-addressed files under `Snapshot.prefix`. The `plaintext`,
-`rendered_html`, and `screenshot` fields contain filenames; HAR
-`response.content._file` fields refer to stored response bodies. Consumers
-read these files directly from the shared fsspec backend. Storage writes are
-bounded; timeouts and other storage failures propagate, and no snapshot record
-is persisted.
+Artifacts are content-addressed files organized under the captured URL's
+hostname. The public `Snapshot` resolves its artifact fields to full storage
+paths: `plaintext`, `rendered_html`, and `screenshot` point at stored files,
+and each HAR `response.content._file` resolves to its stored response body.
+Persisted database fields and HAR values keep their relative, content-addressed
+names; consumers read the resolved paths directly from the shared fsspec
+backend. Storage writes are bounded; timeouts and other storage failures
+propagate, and no snapshot record is persisted.
 
 ## Infrastructure
 
