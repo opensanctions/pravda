@@ -1,9 +1,4 @@
-"""Tests for the public migration API and packaged migration resources.
-
-These run against the real test Postgres (see AGENTS.md), driving
-``pravda.migrate`` through Alembic — not ``create_all`` — and verifying the
-packaged migration scripts ship as importable resources.
-"""
+"""Tests for the public migration API and packaged migration resources."""
 
 import inspect
 from importlib.resources import files
@@ -17,10 +12,8 @@ from pravda.db import Base
 
 DATABASE_URL = "postgresql+asyncpg://pravda:pravda@localhost:5432/pravda"
 
-# Columns the initial schema must create, mapped to their Postgres data types.
-# Derived from pravda.db.SnapshotRecord; keeping this literal (rather than
-# reflecting Base.metadata) means the test asserts what migrations actually
-# produced, not what the models say they should.
+# Literal (not reflected from Base.metadata) so the test asserts what
+# migrations produced, not what the models declare.
 EXPECTED_COLUMNS = {
     "id": "uuid",
     "url": "text",
@@ -37,12 +30,7 @@ EXPECTED_COLUMNS = {
 
 @pytest.fixture()
 async def empty_database():
-    """Drop the public schema for a migration test and restore it after.
-
-    Restores the ``create_all`` schema the rest of the session relies on, so a
-    migration test (which exercises Alembic, not ``create_all``) cannot break
-    the other fixtures regardless of execution order.
-    """
+    """Drop the public schema for a migration test and restore ``create_all`` after."""
     engine = create_async_engine(DATABASE_URL)
     async with engine.begin() as conn:
         await conn.execute(text("DROP SCHEMA public CASCADE"))
@@ -86,8 +74,7 @@ async def test_migrate_is_async_and_exported():
 
 @pytest.mark.asyncio
 async def test_migrate_creates_expected_schema(empty_database):
-    """A migration from an empty database creates the snapshot table with the
-    expected columns and stamps alembic_version at head."""
+    """Migrating an empty database creates the snapshot table and stamps head."""
     await pravda.migrate(DATABASE_URL)
 
     assert await _snapshot_columns(empty_database) == EXPECTED_COLUMNS
@@ -100,7 +87,6 @@ async def test_migrate_to_head_is_idempotent(empty_database):
     await pravda.migrate(DATABASE_URL)
     first_version = await _alembic_version(empty_database)
 
-    # A second run must not raise and must leave the version unchanged.
     await pravda.migrate(DATABASE_URL)
     assert await _alembic_version(empty_database) == first_version
     assert await _snapshot_columns(empty_database) == EXPECTED_COLUMNS
@@ -108,29 +94,21 @@ async def test_migrate_to_head_is_idempotent(empty_database):
 
 @pytest.mark.asyncio
 async def test_migrate_runs_inside_running_event_loop(empty_database):
-    """Programmatic migration works from an already-running event loop (no
-    nested ``asyncio.run`` failure). This test itself runs inside a loop and
-    awaits ``migrate`` directly."""
+    """Migration works from within a running event loop (no nested asyncio.run)."""
     await pravda.migrate(DATABASE_URL)
     assert await _alembic_version(empty_database) is not None
 
 
 @pytest.mark.asyncio
 async def test_migrate_does_not_require_database_url_env(monkeypatch):
-    """The public API needs no DATABASE_URL in the environment; resource
-    lookup must not depend on it."""
+    """The public API needs no DATABASE_URL in the environment."""
     monkeypatch.delenv("DATABASE_URL", raising=False)
-    # Locating the migration scripts is independent of any env var.
     migrations = files("pravda") / "migrations"
     assert (migrations / "env.py").is_file()
 
 
 def test_packaged_migration_resources_are_present():
-    """The migration environment and every revision ship inside the package.
-
-    Guards the packaging contract: these resources must be importable from an
-    installed distribution, not derived from a source checkout.
-    """
+    """The migration environment and every revision ship inside the package."""
     migrations = files("pravda") / "migrations"
     assert (migrations / "env.py").is_file()
     assert (migrations / "script.py.mako").is_file()
@@ -140,5 +118,3 @@ def test_packaged_migration_resources_are_present():
         child.name for child in versions.iterdir() if child.name.endswith(".py")
     ]
     assert revision_files, "no packaged migration revisions found"
-    # Each revision file is named by its Alembic revision id (no .pyc etc.).
-    assert all(name.endswith(".py") for name in revision_files)

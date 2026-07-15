@@ -78,11 +78,7 @@ async def test_download_body_folded_into_har(storage: Storage):
 async def test_download_body_storage_timeout_leaves_entry_bodyless(
     storage: Storage, monkeypatch
 ):
-    """A download-body write that exceeds its budget leaves the HAR entry bodyless.
-
-    The rest of the archive survives — only the matching entry is left
-    without a body, rather than dropping the whole snapshot.
-    """
+    """A timed-out download write leaves its HAR entry bodyless."""
     pdf_bytes = b"%PDF-1.7 real-ish bytes\n%EOF"
     manifest = {
         "log": {
@@ -102,8 +98,6 @@ async def test_download_body_storage_timeout_leaves_entry_bodyless(
     with zipfile.ZipFile(zip_path, "w") as archive:
         archive.writestr("har.har", json.dumps(manifest))
 
-    # Tighten the write budget and stall the storage backend past it. The real
-    # put_blob path still runs; only the fsspec write boundary sleeps.
     monkeypatch.setattr(har_module, "STORAGE_WRITE_TIMEOUT_S", 0.01)
 
     async def slow_pipe_file(path, value, **kwargs):
@@ -121,6 +115,4 @@ async def test_download_body_storage_timeout_leaves_entry_bodyless(
     )
 
     entry = manifest["log"]["entries"][0]["response"]["content"]
-    # Storage timed out; the entry is left without a _file rather than the
-    # whole archive failing.
     assert "_file" not in entry

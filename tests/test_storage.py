@@ -14,7 +14,7 @@ async def test_put_blob_stores_at_content_address(storage: Storage):
     stored = await storage.put_blob(name, data, url)
     assert stored == name
 
-    # Written under the normalized hostname prefix within the storage backend
+    # Written under the normalized hostname prefix.
     path = Path(storage.content_prefix(url)) / name
     assert path.read_bytes() == data
 

@@ -11,12 +11,7 @@ class Base(DeclarativeBase):
 
 
 class SnapshotRecord(Base):
-    """A persisted snapshot row (the ``snapshot`` table).
-
-    This is the SQLAlchemy ORM mapping — a storage detail. The public,
-    immutable domain value is ``pravda.snapshots.Snapshot``; ``from_record``
-    converts a row into one.
-    """
+    """A persisted snapshot row."""
 
     __tablename__ = "snapshot"
 
@@ -31,13 +26,7 @@ class SnapshotRecord(Base):
     http_status: Mapped[int | None] = mapped_column(Integer, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
-    # Captured evidence. Each is a content-addressed filename
-    # (``<sha1>.<extension>``) under the shared storage backend; the
-    # extension carries the artifact's type, so no separate MIME column.
     plaintext: Mapped[str | None] = mapped_column(Text, nullable=True)
     rendered_html: Mapped[str | None] = mapped_column(Text, nullable=True)
     screenshot: Mapped[str | None] = mapped_column(Text, nullable=True)
-    # The recorded HAR manifest, stored inline as JSON. Each entry's
-    # ``response.content._file`` names a body stored as a content-addressed
-    # blob (``<sha1>.<extension>``) under the storage prefix.
     http_archive: Mapped[dict | None] = mapped_column(JSONB, nullable=True)

@@ -1,8 +1,4 @@
-"""Direct library tests for the history query and public Snapshot dataclass.
-
-These exercise ``Pravda.snapshots()`` against rows seeded through the test
-database fixture, then read through the configured public client.
-"""
+"""Direct library tests for ``Pravda.snapshots()`` and the Snapshot dataclass."""
 
 import dataclasses
 import uuid
@@ -80,12 +76,11 @@ async def test_snapshots_returns_public_dataclass_with_resolved_prefix(
     result = (await pravda.snapshots(url))[0]
 
     assert isinstance(result, Snapshot)
-    # All fields of the ORM row are carried through.
     assert result.url == url
     assert result.final_url == "https://example.com/page"
     assert result.http_status == 200
     assert result.rendered_html == "a" * 40 + ".html"
-    # prefix is resolved from final_url (base path + normalized hostname).
+    # prefix is resolved from final_url via normalized hostname.
     assert result.prefix is not None
     assert result.prefix.endswith("example.com")
 

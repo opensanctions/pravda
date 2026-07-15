@@ -1,12 +1,4 @@
-"""Finalization-stage failure and timeout semantics.
-
-Operational failures and timeouts while closing the recording context or
-processing the HAR must not erase the page evidence already captured or let
-the capture escape without persistence. The context-close failure and HAR
-timeout paths are exercised directly against ``_finalize_capture`` — the
-boundary where they can be induced deterministically — while the end-to-end
-persistence behavior is verified through ``Pravda.snapshot``.
-"""
+"""Finalization-stage failure and timeout semantics."""
 
 import asyncio
 from pathlib import Path
@@ -37,8 +29,7 @@ async def _capture_example(page, storage: Storage) -> CaptureResult:
 async def test_context_close_failure_keeps_evidence(
     browser, storage: Storage, tmp_path
 ):
-    """A context.close that fails operationally keeps the page evidence,
-    records a fatal error, and discards the HAR."""
+    """A failed context.close keeps evidence and records a fatal error."""
     http_archive_path = tmp_path / "record.zip"
     context = await browser.new_context(
         record_har_path=str(http_archive_path),
@@ -56,8 +47,6 @@ async def test_context_close_failure_keeps_evidence(
         context, captured, http_archive_path, "https://example.com/", {}, storage
     )
 
-    # Page evidence is retained exactly; only a fatal error is added and the
-    # (unusable) HAR is dropped.
     assert result.http_status == 200
     assert result.final_url == "https://example.com/"
     assert result.rendered_html == captured.rendered_html
@@ -71,8 +60,7 @@ async def test_context_close_failure_keeps_evidence(
 async def test_context_close_failure_composes_with_prior_error(
     browser, storage: Storage, tmp_path
 ):
-    """A context.close failure is composed onto an error the capture already
-    recorded (e.g. a load timeout) instead of overwriting it."""
+    """A context.close failure is composed onto a prior capture error."""
     http_archive_path = tmp_path / "record.zip"
     context = await browser.new_context(
         record_har_path=str(http_archive_path),
@@ -105,7 +93,6 @@ async def test_context_close_failure_composes_with_prior_error(
         storage,
     )
 
-    # Both the prior capture error and the finalization error survive.
     assert prior_error in result.error
     assert "context close failed" in result.error
     assert result.rendered_html == captured.rendered_html
@@ -116,8 +103,7 @@ async def test_context_close_failure_composes_with_prior_error(
 async def test_har_processing_timeout_keeps_evidence(
     browser, storage: Storage, tmp_path, monkeypatch
 ):
-    """A HAR processing timeout keeps the page evidence, marks the snapshot
-    fatal, and drops the HAR."""
+    """A HAR processing timeout keeps evidence, marks fatal, and drops the HAR."""
     http_archive_path = tmp_path / "record.zip"
     context = await browser.new_context(
         record_har_path=str(http_archive_path),
@@ -126,8 +112,7 @@ async def test_har_processing_timeout_keeps_evidence(
     page = await context.new_page()
     captured = await _capture_example(page, storage)
 
-    # capture_page already stored its artifacts; stall the storage backend and
-    # tighten the HAR budget so unpacking the archive exceeds it.
+    # Artifacts are already stored; stall the backend and tighten the HAR budget.
     monkeypatch.setattr(pravda_module, "HAR_PROCESSING_TIMEOUT_S", 0.01)
 
     async def slow_pipe_file(path, value, **kwargs):
@@ -153,11 +138,7 @@ async def test_har_processing_timeout_keeps_evidence(
 async def test_snapshot_har_storage_failure_persists_attempt(
     pravda: Pravda, monkeypatch
 ):
-    """An operational storage failure during HAR processing does not let the
-    capture escape: the snapshot is persisted with the page metadata, a HAR
-    error composed onto any capture error, and no HAR. The same failing backend
-    also drops the page artifacts (their writes are isolated); the point is
-    that the attempt is still committed."""
+    """A storage failure during HAR processing still persists the attempt."""
 
     async def drive(page, url):
         await page.route(url, _fulfill_html)
@@ -173,10 +154,8 @@ async def test_snapshot_har_storage_failure_persists_attempt(
     assert snapshot.error is not None
     assert "HAR processing failed" in snapshot.error
     assert snapshot.http_archive is None
-    # Page metadata persisted despite the storage failure.
     assert snapshot.http_status == 200
     assert snapshot.final_url == "https://example.com/"
-    # The failing backend dropped the page artifacts too (isolated writes).
     assert snapshot.rendered_html is None
     assert snapshot.plaintext is None
     assert snapshot.screenshot is None

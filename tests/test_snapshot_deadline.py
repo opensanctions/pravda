@@ -1,14 +1,4 @@
-"""Phase-by-phase deadline behavior for ``Pravda.snapshot``.
-
-snapshot() is bounded phase by phase rather than by a single outer breaker.
-These tests cover the guarantees of that design:
-
-* a capture-phase timeout (startup / setup / drive) persists a failed attempt;
-* evidence already captured survives a later finalize timeout;
-* a wedged database commit propagates rather than pretending to persist;
-* driver teardown is bounded and best-effort, never altering finalized state;
-* cancellation (BaseException) is never caught.
-"""
+"""Phase-by-phase deadline behavior for ``Pravda.snapshot``."""
 
 import asyncio
 import time
@@ -45,8 +35,7 @@ async def _drive_example(page, url):
 async def test_snapshot_drive_timeout_persists_failed_attempt(
     pravda: Pravda, monkeypatch
 ):
-    """A drive callback that exceeds its budget is persisted as a failed
-    snapshot with no evidence."""
+    """A drive callback that exceeds its budget is persisted as a failed snapshot."""
     monkeypatch.setattr(capture_module, "DRIVE_TIMEOUT_S", 0.2)
 
     async def drive(page, url):
@@ -72,8 +61,7 @@ async def test_snapshot_drive_timeout_persists_failed_attempt(
 async def test_snapshot_setup_timeout_persists_failed_attempt(
     pravda: Pravda, monkeypatch
 ):
-    """A context/page setup that exceeds its budget is persisted as a failed
-    snapshot with no evidence."""
+    """A context/page setup exceeding its budget is persisted as a failed snapshot."""
     monkeypatch.setattr(pravda_module, "SETUP_TIMEOUT_S", 0.2)
 
     async def slow_new_context(self, **kwargs):
@@ -98,9 +86,7 @@ async def test_snapshot_setup_timeout_persists_failed_attempt(
 async def test_snapshot_playwright_startup_timeout_persists_failed_attempt(
     pravda: Pravda, monkeypatch
 ):
-    """A wedged Playwright driver startup is bounded explicitly (not left to
-    an unbounded context-manager teardown): a pre-capture browser failure,
-    persisted as an empty failed attempt."""
+    """A wedged Playwright startup is bounded and persisted as a failed attempt."""
 
     class _WedgedDriver:
         async def start(self):
@@ -128,9 +114,7 @@ async def test_snapshot_playwright_startup_timeout_persists_failed_attempt(
 async def test_snapshot_context_close_timeout_preserves_evidence(
     pravda: Pravda, monkeypatch
 ):
-    """A context.close timeout during finalization does not erase already-
-    captured evidence: the snapshot is persisted with the artifacts, a
-    finalization error composed onto the capture, and no HAR."""
+    """A context.close timeout preserves captured evidence."""
     monkeypatch.setattr(pravda_module, "CONTEXT_CLOSE_TIMEOUT_S", 0.01)
 
     async def slow_close(self, **kwargs):
@@ -157,8 +141,7 @@ async def test_snapshot_context_close_timeout_preserves_evidence(
 
 @pytest.mark.asyncio
 async def test_snapshot_persistence_timeout_propagates(pravda: Pravda, monkeypatch):
-    """A wedged commit is a database failure: the persistence budget trips,
-    the timeout propagates, and nothing is pretended persisted."""
+    """A wedged commit trips the persistence budget and propagates."""
     monkeypatch.setattr(pravda_module, "PERSIST_TIMEOUT_S", 0.2)
 
     async def hanging_commit(self):
@@ -185,8 +168,7 @@ class _WedgedStop:
 
 @pytest.mark.asyncio
 async def test_stop_playwright_is_bounded(monkeypatch):
-    """playwright.stop() teardown cannot exceed its budget: a wedged stop is
-    cancelled at the budget and the helper returns (logged as a warning)."""
+    """A wedged stop is cancelled at the budget and the helper returns."""
     monkeypatch.setattr(pravda_module, "PLAYWRIGHT_STOP_TIMEOUT_S", 0.2)
 
     start = time.monotonic()
@@ -200,9 +182,7 @@ async def test_stop_playwright_is_bounded(monkeypatch):
 async def test_snapshot_slow_browser_cleanup_is_bounded_and_keeps_evidence(
     pravda: Pravda, monkeypatch
 ):
-    """A browser.close that wedges during cleanup cannot block the snapshot or
-    alter its finalized state: cleanup is best-effort and bounded, so evidence
-    is persisted intact and the call returns within the budget."""
+    """A wedged browser.close during cleanup keeps evidence intact."""
 
     async def slow_close(self, **kwargs):
         await asyncio.sleep(5)
@@ -227,8 +207,7 @@ async def test_snapshot_slow_browser_cleanup_is_bounded_and_keeps_evidence(
 
 @pytest.mark.asyncio
 async def test_snapshot_cancellation_propagates(pravda: Pravda):
-    """Cancelling an in-flight snapshot propagates CancelledError rather than
-    swallowing it as a persisted failed attempt."""
+    """Cancelling an in-flight snapshot propagates CancelledError."""
     started = asyncio.Event()
     block = asyncio.Event()
 
