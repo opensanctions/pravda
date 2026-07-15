@@ -200,8 +200,7 @@ class _FakeDownload:
 
 
 @pytest.mark.asyncio
-async def test_save_download_failure_returns_none():
-    """An operational failure saving a download yields None instead of escaping."""
+async def test_save_download_failure_propagates():
     download = _FakeDownload(save_error=OSError("disk full"))
-    result = await _save_download(download)
-    assert result is None
+    with pytest.raises(OSError, match="disk full"):
+        await _save_download(download)

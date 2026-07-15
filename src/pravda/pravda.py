@@ -33,7 +33,7 @@ BROWSER_CHANNEL = "chrome"
 # Capture and finalization form one atomic evidence operation. A context-close
 # failure invalidates the result; cleanup is best-effort. Storage, persistence,
 # non-Playwright callback failures, and cancellation propagate.
-SNAPSHOT_TIMEOUT_S = 120
+SNAPSHOT_TIMEOUT_S = 240
 CONNECT_TIMEOUT_MS = 10_000
 CONTEXT_CLOSE_TIMEOUT_S = 30
 HAR_PROCESSING_TIMEOUT_S = 20
@@ -280,7 +280,8 @@ class Pravda:
 
         Without *drive*, Pravda navigates and waits for normal page load. With
         *drive*, the callback owns navigation and interaction on the supplied
-        recording page; Pravda then captures its current state.
+        recording page; Pravda then captures its current state. The first
+        download triggered by the callback becomes the capture subject.
 
         The capture and HAR finalization have one wall-clock bound. Playwright
         and context-close failures are persisted without artifacts; storage,

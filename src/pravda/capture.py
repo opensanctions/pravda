@@ -93,13 +93,14 @@ class _PageObserver:
         ):
             self.navigation_status = response.status
 
-    async def wait_download(self, url: str) -> Download | None:
+    async def wait_download(self, url: str) -> Download:
         """Wait up to ``DOWNLOAD_TIMEOUT_S`` for the first download."""
         try:
             async with asyncio.timeout(DOWNLOAD_TIMEOUT_S):
                 await self._download_seen.wait()
-        except asyncio.TimeoutError:
-            logger.warning("Download event did not fire for %s", url)
+        except asyncio.TimeoutError as error:
+            raise PlaywrightError(f"Download event did not fire for {url}") from error
+        assert self.download is not None
         return self.download
 
 
@@ -114,13 +115,10 @@ async def capture_page(page: Page, url: str, storage: Storage) -> CaptureResult:
         plaintext = rendered_html = screenshot = None
 
         if navigation.is_download:
-            final_url = None
             download = await observer.wait_download(url)
-            if download is not None:
-                downloaded = await _save_download(download)
-                if downloaded is not None:
-                    http_status = observer.navigation_status
-                    final_url = downloaded.url
+            downloaded = await _save_download(download)
+            http_status = observer.navigation_status
+            final_url = downloaded.url
         elif navigation.http_status is not None:
             plaintext, rendered_html, screenshot = await _capture_artifacts(
                 page, navigation.final_url, storage
@@ -245,8 +243,7 @@ async def _capture_one(
     except PlaywrightError as exception:
         logger.warning("Failed to capture %s for %s: %s", name, url, exception)
         return None
-    blob = data.encode() if isinstance(data, str) else data
-    return await _store_blob(blob, extension, url, storage)
+    return await _store_blob(data, extension, url, storage)
 
 
 async def capture_current(
@@ -304,7 +301,8 @@ async def capture_driven(
         if observer.download is None and page.url == "about:blank":
             await observer.wait_download(url)
 
-        final_url = observer.download.url if observer.download is not None else page.url
+        download = observer.download
+        final_url = download.url if download is not None else page.url
 
         if not is_http_url(final_url):
             raise ValueError(
@@ -313,12 +311,12 @@ async def capture_driven(
             )
 
         return await capture_current(
-            page, final_url, observer.navigation_status, observer.download, storage
+            page, final_url, observer.navigation_status, download, storage
         )
 
 
-async def _save_download(download: Download) -> DownloadedBody | None:
-    """Save a remote download, returning ``None`` on timeout or failure."""
+async def _save_download(download: Download) -> DownloadedBody:
+    """Save a remote download or propagate the recovery failure."""
     try:
         with tempfile.TemporaryDirectory() as download_dir:
             download_path = Path(download_dir) / "download"
@@ -329,9 +327,7 @@ async def _save_download(download: Download) -> DownloadedBody | None:
                     data=download_path.read_bytes(),
                     suggested_filename=download.suggested_filename,
                 )
-    except asyncio.TimeoutError:
-        logger.warning("Timeout saving download for %s", download.url)
-        return None
-    except Exception as exception:
-        logger.warning("Failed to save download for %s: %s", download.url, exception)
-        return None
+    except asyncio.TimeoutError as error:
+        raise PlaywrightError(
+            f"Download save exceeded {DOWNLOAD_TIMEOUT_S}s budget for {download.url}"
+        ) from error
