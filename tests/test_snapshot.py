@@ -6,7 +6,7 @@ from playwright.async_api import Browser, Page
 from playwright.async_api import TimeoutError as PlaywrightTimeout
 
 import pravda.capture as capture_module
-from pravda.capture import capture_page
+from pravda.capture import _save_download, capture_page
 from pravda.storage import Storage
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -230,3 +230,80 @@ async def test_capture_page_storage_write_timeout_skips_artifacts(
     assert result.plaintext is None
     assert result.rendered_html is None
     assert result.screenshot is None
+
+
+@pytest.mark.asyncio
+async def test_capture_page_storage_failure_skips_artifacts(
+    page: Page, storage: Storage, monkeypatch
+):
+    """Artifact writes that fail operationally (not just on timeout) yield
+    None, not exceptions.
+
+    Each storage write (rendered HTML, plaintext, screenshot) is isolated; a
+    backend that errors drops one artifact rather than the whole capture. The
+    page itself loaded, so that metadata survives — only the artifacts are
+    dropped.
+    """
+    fixture_html = (FIXTURES / "example.html").read_text()
+
+    await page.route(
+        "https://example.com",
+        lambda route: route.fulfill(
+            body=fixture_html,
+            headers={"content-type": "text/html"},
+        ),
+    )
+
+    # Make every storage write fail operationally. The real put_blob path still
+    # runs; only the fsspec write boundary raises.
+    async def failing_pipe_file(path, value, **kwargs):
+        raise OSError("storage backend down")
+
+    monkeypatch.setattr(storage.fs, "_pipe_file", failing_pipe_file)
+
+    result = await capture_page(page, "https://example.com", storage)
+
+    # The page committed and loaded; only the writes failed.
+    assert result.http_status == 200
+    assert result.error is None
+    assert result.final_url == "https://example.com/"
+    assert result.plaintext is None
+    assert result.rendered_html is None
+    assert result.screenshot is None
+
+
+class _FakeDownload:
+    """Minimal duck-typed stand-in for a Playwright ``Download``."""
+
+    def __init__(self, save_error):
+        self.url = "https://example.com/file.bin"
+        self.suggested_filename = "file.bin"
+        self._save_error = save_error
+
+    async def save_as(self, path):
+        if self._save_error is not None:
+            raise self._save_error
+        Path(path).write_bytes(b"data")
+
+
+@pytest.mark.asyncio
+async def test_save_download_failure_returns_none():
+    """An operational failure saving a download yields None (leaving the HAR
+    entry bodyless) instead of escaping and dropping the capture."""
+    download = _FakeDownload(save_error=OSError("disk full"))
+    result = await _save_download(download)
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_save_download_temp_directory_failure_returns_none(monkeypatch):
+    """Failure to allocate the local download directory is also isolated."""
+
+    def fail_mkdtemp():
+        raise OSError("disk full")
+
+    monkeypatch.setattr(capture_module.tempfile, "mkdtemp", fail_mkdtemp)
+
+    result = await _save_download(_FakeDownload(save_error=None))
+
+    assert result is None

@@ -208,6 +208,28 @@ async def _navigate(page: Page, url: str) -> _Navigation:
         )
 
 
+async def _store_blob(
+    name: str, data: bytes, extension: str, url: str, storage: Storage
+) -> str | None:
+    """Store one artifact's bytes and return its content-addressed filename.
+
+    Each write is individually bounded and isolated from the others: a write
+    that exceeds its budget or fails operationally is logged and yields
+    ``None`` for that artifact, so a wedged or erroring storage backend drops
+    one artifact rather than the whole capture. Cancellation is never caught
+    here — it propagates to the caller.
+    """
+    try:
+        async with asyncio.timeout(STORAGE_WRITE_TIMEOUT_S):
+            return await storage.put_blob(cas_name(data, extension), data, url)
+    except asyncio.TimeoutError:
+        logger.warning("Timeout storing %s for %s", name, url)
+        return None
+    except Exception as exception:
+        logger.warning("Failed to store %s for %s: %s", name, url, exception)
+        return None
+
+
 async def _capture_artifacts(
     page: Page, url: str, storage: Storage
 ) -> tuple[str | None, str | None, str | None]:
@@ -230,7 +252,8 @@ async def _capture_artifacts(
     downstream extraction needs re-running.
 
     Each storage write is individually bounded; a write that exceeds its
-    budget yields ``None`` for that artifact and lets the others survive.
+    budget or fails operationally yields ``None`` for that artifact and lets
+    the others survive (see :func:`_store_blob`).
 
     Returns ``(plaintext, rendered_html, screenshot)`` filenames, each a
     content address ``<sha1>.<extension>`` whose extension carries its type;
@@ -254,14 +277,9 @@ async def _capture_artifacts(
 
     rendered_html = plaintext = None
     if html is not None:
-        html_blob = html.encode()
-        try:
-            async with asyncio.timeout(STORAGE_WRITE_TIMEOUT_S):
-                rendered_html = await storage.put_blob(
-                    cas_name(html_blob, "html"), html_blob, url
-                )
-        except asyncio.TimeoutError:
-            logger.warning("Timeout storing rendered_html for %s", url)
+        rendered_html = await _store_blob(
+            "rendered_html", html.encode(), "html", url, storage
+        )
 
         # Plaintext: every text node of the rendered DOM via get_text
         # (visible or not), whitespace collapsed so the hash tracks real
@@ -269,14 +287,7 @@ async def _capture_artifacts(
         text = " ".join(
             BeautifulSoup(html, "html.parser").get_text(separator=" ").split()
         )
-        text_blob = text.encode()
-        try:
-            async with asyncio.timeout(STORAGE_WRITE_TIMEOUT_S):
-                plaintext = await storage.put_blob(
-                    cas_name(text_blob, "txt"), text_blob, url
-                )
-        except asyncio.TimeoutError:
-            logger.warning("Timeout storing plaintext for %s", url)
+        plaintext = await _store_blob("plaintext", text.encode(), "txt", url, storage)
 
     # Use clip to constrain the screenshot width to the viewport width.
     # CSS approaches (max-width on html/body, overflow-x: hidden, etc.) don't
@@ -309,21 +320,21 @@ async def _capture_one(
 ) -> str | None:
     """Capture one artifact via *callback* and store the blob.
 
-    The capture (``callback``) and the storage write each carry their own
-    bound; either timing out yields ``None`` for this artifact.
+    The capture (``callback``) carries its own bound; timing out or raising a
+    Playwright error yields ``None`` for this artifact. Storage is delegated
+    to :func:`_store_blob`, which bounds the write and absorbs operational
+    failures the same way.
     """
     try:
         data = await callback()
-        blob = data.encode() if isinstance(data, str) else data
-        filename = cas_name(blob, extension)
-        async with asyncio.timeout(STORAGE_WRITE_TIMEOUT_S):
-            return await storage.put_blob(filename, blob, url)
     except (asyncio.TimeoutError, PlaywrightTimeout):
-        logger.warning("Timeout capturing or storing %s for %s", name, url)
+        logger.warning("Timeout capturing %s for %s", name, url)
         return None
     except PlaywrightError as exception:
         logger.warning("Failed to capture %s for %s: %s", name, url, exception)
         return None
+    blob = data.encode() if isinstance(data, str) else data
+    return await _store_blob(name, blob, extension, url, storage)
 
 
 async def capture_current(
@@ -398,15 +409,17 @@ async def _save_download(download: Download) -> DownloadedBody | None:
 
     The body never reached the renderer (Chrome's viewer swallowed it), so we
     read it from the download instead. Returns ``None`` when the save exceeds
-    its budget or Playwright reports an error, so the caller can leave the
-    matching HAR entry bodyless instead of dropping the whole archive.
+    its budget or fails operationally (including Playwright errors), so the
+    caller can leave the matching HAR entry bodyless instead of dropping the
+    whole archive.
 
     We connect to Chrome over WebSocket (a remote ``playwright run-server``),
     and ``download.path()`` throws in that mode, so we can't read the file
     Playwright already wrote — ``save_as`` is the only way to get the bytes.
     """
-    download_dir = Path(tempfile.mkdtemp())
+    download_dir: Path | None = None
     try:
+        download_dir = Path(tempfile.mkdtemp())
         async with asyncio.timeout(DOWNLOAD_TIMEOUT_S):
             await download.save_as(str(download_dir / "download"))
             return DownloadedBody(
@@ -417,8 +430,9 @@ async def _save_download(download: Download) -> DownloadedBody | None:
     except asyncio.TimeoutError:
         logger.warning("Timeout saving download for %s", download.url)
         return None
-    except PlaywrightError as exception:
+    except Exception as exception:
         logger.warning("Failed to save download for %s: %s", download.url, exception)
         return None
     finally:
-        shutil.rmtree(download_dir, ignore_errors=True)
+        if download_dir is not None:
+            shutil.rmtree(download_dir, ignore_errors=True)

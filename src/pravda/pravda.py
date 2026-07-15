@@ -138,6 +138,19 @@ async def _connect(playwright, browser_ws_url: str) -> Browser:
     )
 
 
+def _compose_error(existing: str | None, addition: str) -> str:
+    """Combine an existing capture error with a later finalization error.
+
+    A finalization failure (context close, HAR processing) is appended to any
+    error the capture already recorded (e.g. a load timeout) rather than
+    overwriting it, so both the page-level and finalization-level causes stay
+    visible on the persisted snapshot.
+    """
+    if existing:
+        return f"{existing}; {addition}"
+    return addition
+
+
 async def _finalize_capture(
     context: BrowserContext,
     result: CaptureResult,
@@ -148,39 +161,45 @@ async def _finalize_capture(
 ) -> tuple[CaptureResult, dict | None]:
     """Close the context (flushing the HAR) and unpack the archive.
 
-    ``context.close()`` has no Playwright timeout, so bound it. If it wedges,
-    the HAR it would flush is incomplete and must be discarded — but the page
-    evidence ``capture_page``/``capture_current`` already returned is kept,
-    with a fatal error recorded so the snapshot is not mistaken for a success.
-    HAR processing follows the same policy on its own timeout.
+    ``context.close()`` has no Playwright timeout, so bound it. If it wedges or
+    fails operationally, the HAR it would flush is unusable and is discarded —
+    but the page evidence ``capture_page``/``capture_current`` already returned
+    is kept, with the failure composed onto any error the capture already
+    recorded so the snapshot is not mistaken for a success. HAR processing
+    (unzipping, parsing the manifest, storing every body) follows the same
+    policy on its own timeout or operational failure: the manifest is treated
+    as an atomic stage and discarded whole, so a manifest is never returned
+    whose ``_file`` points at a body that failed to store.
 
     *url* is the page URL (for logging). Returns the (possibly error-amended)
     result and the HAR manifest, or ``None`` when navigation did not commit,
     no archive was recorded, or the archive was discarded. *stages* records
     the ``close`` and ``har`` durations for the completion log.
     """
+    # Close the recording context, flushing the HAR zip. A timeout or
+    # operational failure leaves the HAR unusable: discard it, keep the page
+    # evidence, and record the cause alongside any prior capture error.
     stage_start = time.monotonic()
+    close_error: str | None = None
     try:
         async with asyncio.timeout(CONTEXT_CLOSE_TIMEOUT_S):
             await context.close()
     except asyncio.TimeoutError:
-        stages["close"] = time.monotonic() - stage_start
-        logger.error(
-            "context.close exceeded %ss budget for %s; discarding HAR",
-            CONTEXT_CLOSE_TIMEOUT_S,
-            url,
+        close_error = (
+            f"browser context close exceeded {CONTEXT_CLOSE_TIMEOUT_S}s "
+            f"budget; http archive discarded"
         )
-        return (
-            replace(
-                result,
-                error=(
-                    f"browser context close exceeded {CONTEXT_CLOSE_TIMEOUT_S}s "
-                    f"budget; http archive discarded"
-                ),
-            ),
-            None,
+    except Exception as exception:
+        close_error = (
+            f"browser context close failed ({exception}); http archive discarded"
         )
     stages["close"] = time.monotonic() - stage_start
+    if close_error is not None:
+        logger.error("%s for %s", close_error, url)
+        return (
+            replace(result, error=_compose_error(result.error, close_error)),
+            None,
+        )
 
     # The HAR is written when the context closes. Unpack it only when
     # navigation committed — otherwise it holds no useful evidence. Bodies are
@@ -194,7 +213,12 @@ async def _finalize_capture(
     ):
         return result, None
 
+    # Unpack the archive and store every body as one bounded, atomic stage. A
+    # timeout or operational failure (parse error, storage error) discards the
+    # manifest whole — never a manifest with a dangling body reference — while
+    # the page evidence and any prior capture error are preserved.
     http_archive: dict | None = None
+    har_error: str | None = None
     stage_start = time.monotonic()
     try:
         async with asyncio.timeout(HAR_PROCESSING_TIMEOUT_S):
@@ -202,23 +226,19 @@ async def _finalize_capture(
                 http_archive_path, result.final_url, storage, download=result.download
             )
     except asyncio.TimeoutError:
-        stages["har"] = time.monotonic() - stage_start
-        logger.error(
-            "HAR processing exceeded %ss budget for %s; discarding HAR",
-            HAR_PROCESSING_TIMEOUT_S,
-            url,
+        har_error = (
+            f"HAR processing exceeded {HAR_PROCESSING_TIMEOUT_S}s "
+            f"budget; http archive discarded"
         )
+    except Exception as exception:
+        har_error = f"HAR processing failed ({exception}); http archive discarded"
+    stages["har"] = time.monotonic() - stage_start
+    if har_error is not None:
+        logger.error("%s for %s", har_error, url)
         return (
-            replace(
-                result,
-                error=(
-                    f"HAR processing exceeded {HAR_PROCESSING_TIMEOUT_S}s "
-                    f"budget; http archive discarded"
-                ),
-            ),
+            replace(result, error=_compose_error(result.error, har_error)),
             None,
         )
-    stages["har"] = time.monotonic() - stage_start
     return result, http_archive
 
 
@@ -227,9 +247,9 @@ async def _close_browser(browser: Browser) -> None:
 
     ``browser.close()`` clears contexts and disconnects from the remote server
     (analogous to force-quitting); it has no timeout argument, so bound it.
-    Cleanup runs after the snapshot is finalized, so a timeout or error here
-    is logged as an operational warning only and never alters the finalized
-    snapshot's success or error state.
+    Cleanup runs after the snapshot is finalized, so any failure here —
+    timeout or operational — is logged as an operational warning only and never
+    propagates, so it cannot prevent the finalized snapshot from persisting.
     """
     try:
         async with asyncio.timeout(BROWSER_CLOSE_TIMEOUT_S):
@@ -239,8 +259,8 @@ async def _close_browser(browser: Browser) -> None:
             "browser.close exceeded %ss budget; cleanup abandoned",
             BROWSER_CLOSE_TIMEOUT_S,
         )
-    except PlaywrightError as error:
-        logger.warning("browser.close failed: %s", error.message)
+    except Exception as error:
+        logger.warning("browser.close failed: %s", error)
 
 
 async def _persist_snapshot(
@@ -449,10 +469,11 @@ async def _capture(
                     stages["capture"] = time.monotonic() - stage_start
 
                     # Close the context (flushing the HAR) and unpack the
-                    # archive. Both carry fatal-evidence semantics on timeout:
-                    # the page evidence already captured is kept, a precise
-                    # error is recorded, and the (potentially incomplete) HAR
-                    # is discarded.
+                    # archive. Both carry fatal-evidence semantics on a timeout
+                    # or operational failure: the page evidence already
+                    # captured is kept, the failure is composed onto any prior
+                    # capture error, and the (potentially incomplete) HAR is
+                    # discarded.
                     result, http_archive = await _finalize_capture(
                         context,
                         result,
@@ -470,7 +491,10 @@ async def _capture(
                 if browser is not None:
                     await _close_browser(browser)
     except PlaywrightError as error:
-        # Couldn't even reach the browser — record an empty, failed result.
+        # A Playwright error escaped the inner stages — connect, context/page
+        # setup, or a drive callback's Playwright error (capture_page and
+        # capture_current absorb their own). No page evidence had been
+        # captured yet at this point, so record an empty, failed result.
         logger.error("Browser error for %s: %s", url, error.message)
         result = CaptureResult(
             http_status=None,
@@ -582,9 +606,13 @@ class Pravda:
         including Playwright errors and timeouts raised from *drive* — are
         still persisted as :class:`~pravda.snapshots.Snapshot` rows (with
         ``error`` set and no evidence); a database failure that prevents the
-        commit propagates. An arbitrary (non-Playwright, non-timeout) exception
-        raised by *drive* is not turned into a snapshot failure: Pravda cleans
-        up and re-raises it to the caller.
+        commit propagates. A failure while finalizing the capture (closing the
+        recording context or processing the HAR) does not discard page evidence
+        already captured: the snapshot is persisted with the page artifacts,
+        an ``error`` describing the finalization failure composed onto any
+        earlier capture error, and no HAR. An arbitrary (non-Playwright,
+        non-timeout) exception raised by *drive* is not turned into a snapshot
+        failure: Pravda cleans up and re-raises it to the caller.
 
         The recorded ``url`` is *url* (the subject the caller asked to
         capture); ``final_url`` reflects where the page actually landed
