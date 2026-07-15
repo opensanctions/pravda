@@ -27,6 +27,7 @@ import pytest
 from playwright.async_api import Browser, BrowserContext
 from sqlalchemy.ext.asyncio import AsyncSession
 
+import pravda.capture as capture_module
 import pravda.pravda as pravda_module
 from pravda import Pravda
 
@@ -55,7 +56,7 @@ async def test_snapshot_drive_timeout_persists_failed_attempt(
 ):
     """A drive callback that exceeds its budget is a capture-phase timeout:
     the attempt is persisted as a failed snapshot with no evidence."""
-    monkeypatch.setattr(pravda_module, "DRIVE_TIMEOUT_S", 0.2)
+    monkeypatch.setattr(capture_module, "DRIVE_TIMEOUT_S", 0.2)
 
     async def drive(page, url):
         # User code that hangs; the drive budget cancels it well before 5s.

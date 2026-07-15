@@ -264,3 +264,54 @@ async def test_snapshot_drive_arbitrary_error_propagates_and_persists_nothing(
 
     # Nothing was persisted — the exception escaped before persistence.
     assert await pravda.snapshots("https://example.com") == []
+
+
+@pytest.mark.asyncio
+async def test_snapshot_drive_iframe_navigation_does_not_overwrite_status(
+    pravda: Pravda,
+):
+    """A navigation response fired by an iframe during a drive session must
+    not overwrite the main document's HTTP status.
+
+    The shared page observer records only main-frame navigation responses, so
+    even though the iframe's document load here returns 404, the snapshot's
+    status stays the main document's 200. This is the regression for the
+    consolidated download/response tracking: an iframe navigation can never
+    overwrite the subject HTTP status, in either the default or the driven
+    path.
+    """
+    main_html = """
+    <!DOCTYPE html>
+    <html><body>
+      <h1>Main document</h1>
+      <iframe id="frame"></iframe>
+    </body></html>
+    """
+
+    async def drive(page, url):
+        await page.route(
+            url,
+            lambda route: route.fulfill(
+                body=main_html, headers={"content-type": "text/html"}
+            ),
+        )
+        await page.route(
+            "https://example.com/iframe",
+            lambda route: route.fulfill(
+                status=404, body="missing", headers={"content-type": "text/html"}
+            ),
+        )
+        await page.goto(url, wait_until="load")
+        # Navigate the iframe and wait for its document to load, so the 404
+        # navigation response fires while the drive observer is listening.
+        await page.eval_on_selector(
+            "#frame", "el => el.src = 'https://example.com/iframe'"
+        )
+        await page.frame_locator("#frame").locator("body").wait_for()
+
+    snapshot = await pravda.snapshot("https://example.com", drive=drive)
+
+    # The main document's 200 stands; the iframe's 404 did not overwrite it.
+    assert snapshot.http_status == 200
+    assert snapshot.error is None
+    assert snapshot.final_url == "https://example.com/"

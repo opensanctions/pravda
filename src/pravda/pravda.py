@@ -4,8 +4,9 @@ This module owns the browser capture orchestration (start Playwright, connect,
 set up a recording context, capture, finalize, clean up, shut down, persist)
 and the history query, exposed as async methods on a long-lived, explicitly
 configured :class:`Pravda` instance. The page-level evidence extraction
-(navigate, wait, screenshot/HTML/text, download recovery) lives in
-:mod:`pravda.capture`; the HAR unpacking in :mod:`pravda.http_archive`. Here we
+(navigate, wait, screenshot/HTML/text, download recovery, and driven
+capture) lives in :mod:`pravda.capture`; the HAR unpacking in
+:mod:`pravda.http_archive`. Here we
 wire those pieces into the public surface:
 
 * :meth:`Pravda.snapshot` — the full capture pipeline, bounded phase by phase
@@ -34,22 +35,21 @@ import logging
 import shutil
 import tempfile
 import time
-from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from playwright.async_api import (
-    Browser,
-    BrowserContext,
-    Download,
-    Page,
-    async_playwright,
-)
+from playwright.async_api import Browser, BrowserContext, Page, async_playwright
 from playwright.async_api import Error as PlaywrightError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from pravda.capture import CaptureResult, capture_current, capture_page
+from pravda.capture import (
+    DRIVE_TIMEOUT_S,
+    CaptureResult,
+    DriveCallback,
+    capture_driven,
+    capture_page,
+)
 from pravda.db import SnapshotRecord
 from pravda.http_archive import capture_http_archive
 from pravda.snapshots import Snapshot, from_record
@@ -104,13 +104,6 @@ CONNECT_TIMEOUT_MS = 10_000
 # over a pipe; a timeout here is a capture-phase failure (no evidence yet).
 SETUP_TIMEOUT_S = 10
 
-# Hard bound on a caller's drive callback. The default (no-drive) path is
-# bounded internally by capture_page; a drive callback is user code, so it
-# gets an explicit budget. capture_current (DOM/screenshot/storage/download)
-# runs after the callback and is bounded internally as in the default path.
-# A timeout here is a capture-phase failure (no evidence yet).
-DRIVE_TIMEOUT_S = 60
-
 # Finalization budgets. context.close() (which flushes the HAR zip) has no
 # Playwright timeout argument; bounding it preserves already-captured page
 # evidence and discards an incomplete HAR. HAR processing (unzip + store every
@@ -127,10 +120,6 @@ PLAYWRIGHT_STOP_TIMEOUT_S = 5
 # Persistence budget. A wedged commit is a database failure: bound it, and let
 # the timeout/error propagate (nothing is persisted; we never pretend it was).
 PERSIST_TIMEOUT_S = 15
-
-# Budget to wait for a download event when a navigation handed off to Chrome's
-# downloader (the page settles at about:blank before the event fires).
-DOWNLOAD_TIMEOUT_S = 15
 
 
 @dataclass(frozen=True)
@@ -423,91 +412,6 @@ async def _persist_snapshot(
     return from_record(record, storage)
 
 
-# An async callback that pilots a freshly created recording page: it owns
-# every navigation and interaction (selectors, load states, clicks, form
-# fills), using Playwright directly. Passed to :meth:`Pravda.snapshot` as
-# ``drive``.
-DriveCallback = Callable[[Page, str], Awaitable[None]]
-
-
-async def _drive_capture(
-    page: Page, url: str, drive: DriveCallback, storage: Storage
-) -> CaptureResult:
-    """Run the caller's *drive* callback against *page*, then capture the
-    resulting current page state.
-
-    The latest main-frame document response and the first download are
-    observed for the duration of the callback so :func:`capture_current` can
-    record them. The callback owns every navigation and interaction —
-    including catching a ``Download is starting`` error from a PDF-like
-    navigation so the download can be recovered, just as the default path does
-    internally. It runs under :data:`DRIVE_TIMEOUT_S`; exceeding that budget
-    raises ``asyncio.TimeoutError`` (the caller persists an empty failed
-    attempt).
-
-    A navigation that handed off to Chrome's downloader (e.g. a PDF) leaves
-    the page at ``about:blank``; if the download event has not fired by the
-    time the callback returns it is awaited (bounded) so the download becomes
-    the captured subject. Returns the evidence as a ``CaptureResult``; the
-    caller finalizes and persists.
-
-    A Playwright error or timeout raised by *drive* propagates to the failure
-    handling in :func:`_capture_to_result` (persisted as a failed attempt);
-    any other exception raised by *drive* propagates to the caller untouched
-    once the listeners are removed.
-    """
-    navigation_status: int | None = None
-    download: Download | None = None
-    loop = asyncio.get_running_loop()
-    download_future: asyncio.Future[Download] = loop.create_future()
-    main_frame = page.main_frame
-
-    def on_download(received: Download) -> None:
-        nonlocal download
-        if download is None:
-            download = received
-        if not download_future.done():
-            download_future.set_result(received)
-
-    def on_response(response) -> None:
-        nonlocal navigation_status
-        if response.request.is_navigation_request() and response.frame is main_frame:
-            navigation_status = response.status
-
-    page.on("download", on_download)
-    page.on("response", on_response)
-    try:
-        # The callback is user code: bound it so a wedged callback cannot hang
-        # the capture. capture_current (below) is bounded internally.
-        async with asyncio.timeout(DRIVE_TIMEOUT_S):
-            await drive(page, url)
-
-        if page.url == "about:blank" and navigation_status is None and download is None:
-            raise ValueError(
-                "drive returned before navigating the page; "
-                "call page.goto(...) before returning"
-            )
-
-        # A navigation that handed off to Chrome's downloader (e.g. a PDF)
-        # leaves the page at about:blank; the download event may follow the
-        # callback's return. Keep the listener installed while awaiting it so
-        # the download becomes the captured subject.
-        if download is None and page.url == "about:blank":
-            try:
-                async with asyncio.timeout(DOWNLOAD_TIMEOUT_S):
-                    download = await download_future
-            except asyncio.TimeoutError:
-                logger.warning("Download event did not fire for %s", url)
-
-        final_url = download.url if download is not None else page.url
-        return await capture_current(
-            page, final_url, navigation_status, download, storage
-        )
-    finally:
-        page.remove_listener("download", on_download)
-        page.remove_listener("response", on_response)
-
-
 async def _capture_to_result(
     url: str,
     *,
@@ -570,7 +474,7 @@ async def _capture_to_result(
                 result = await capture_page(page, url, storage)
             else:
                 timeout_message = f"drive callback exceeded {DRIVE_TIMEOUT_S}s budget"
-                result = await _drive_capture(page, url, drive, storage)
+                result = await capture_driven(page, url, drive, storage)
             stages["capture"] = time.monotonic() - capture_start
         except PlaywrightError as error:
             # connect/setup/drive raised before evidence existed (capture_page

@@ -2,6 +2,7 @@ import asyncio
 import logging
 import shutil
 import tempfile
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -29,6 +30,13 @@ DOM_CAPTURE_TIMEOUT_S = 10
 
 # Timeout for download event recovery and download.save_as().
 DOWNLOAD_TIMEOUT_S = 15
+
+# Hard bound on a caller's drive callback. The default (no-drive) path is
+# bounded internally by capture_page; a drive callback is user code, so it
+# gets an explicit budget. capture_current (DOM/screenshot/storage/download)
+# runs after the callback and is bounded internally as in the default path.
+# A timeout here is a capture-phase failure (no evidence yet).
+DRIVE_TIMEOUT_S = 60
 
 
 @dataclass
@@ -65,6 +73,80 @@ class CaptureResult:
     download: DownloadedBody | None
 
 
+# An async callback that pilots a freshly created recording page: it owns
+# every navigation and interaction (selectors, load states, clicks, form
+# fills), using Playwright directly. Passed to :meth:`Pravda.snapshot` as
+# ``drive``.
+DriveCallback = Callable[[Page, str], Awaitable[None]]
+
+
+class _PageObserver:
+    """Track the first download and main-frame navigation responses on *page*.
+
+    Both capture paths share exactly this need: the first ``download`` event
+    (later downloads are ignored) and the status of each *main-frame*
+    navigation response, so an iframe navigation can never overwrite the
+    subject document's HTTP status. Used by the default :func:`capture_page`
+    (where ``goto`` raising ``Download is starting`` prevents it from
+    returning the status) and by :func:`capture_driven` (where the caller's
+    callback performs arbitrary navigation).
+
+    Install/remove is exception-safe: used as an async context manager,
+    ``__aexit__`` always removes both listeners — on success, on a callback
+    exception, and on cancellation — so no listener ever outlives the capture.
+    """
+
+    def __init__(self, page: Page) -> None:
+        self._page = page
+        # The main frame is stable for a page's lifetime, so capturing it once
+        # is enough to reject sub-frame navigation responses below.
+        self._main_frame = page.main_frame
+        self._download_seen = asyncio.Event()
+        self.navigation_status: int | None = None
+        self.download: Download | None = None
+
+    async def __aenter__(self) -> "_PageObserver":
+        self._page.on("download", self._on_download)
+        self._page.on("response", self._on_response)
+        return self
+
+    async def __aexit__(self, *exc_info: object) -> None:
+        self._page.remove_listener("download", self._on_download)
+        self._page.remove_listener("response", self._on_response)
+
+    def _on_download(self, download: Download) -> None:
+        # Only the first download is the capture subject; ignore the rest.
+        if self.download is None:
+            self.download = download
+            self._download_seen.set()
+
+    def _on_response(self, response) -> None:
+        # Main-frame navigation responses only: a sub-frame (iframe)
+        # navigation must not overwrite the subject document's status.
+        if (
+            response.request.is_navigation_request()
+            and response.frame is self._main_frame
+        ):
+            self.navigation_status = response.status
+
+    async def wait_download(self, url: str) -> Download | None:
+        """Await the first download event, bounded by DOWNLOAD_TIMEOUT_S.
+
+        A navigation that handed off to Chrome's downloader (e.g. a PDF) lands
+        the page at ``about:blank`` before the event fires; the observer stays
+        installed while awaiting so the download becomes the captured subject.
+        Returns the resolved download, or ``None`` (with a warning) when the
+        event never fires within the budget. Safe to call after a download was
+        already seen — the event stays set and it returns immediately.
+        """
+        try:
+            async with asyncio.timeout(DOWNLOAD_TIMEOUT_S):
+                await self._download_seen.wait()
+        except asyncio.TimeoutError:
+            logger.warning("Download event did not fire for %s", url)
+        return self.download
+
+
 async def capture_page(page: Page, url: str, storage: Storage) -> CaptureResult:
     """Navigate to *url* and capture evidence: HTTP response and
     screenshot/HTML/text blobs.
@@ -92,26 +174,7 @@ async def capture_page(page: Page, url: str, storage: Storage) -> CaptureResult:
     Returns the evidence as a ``CaptureResult``. Storing it is the caller's
     job — this function never touches the database.
     """
-    loop = asyncio.get_running_loop()
-    download_future: asyncio.Future[Download] = loop.create_future()
-    navigation_status: int | None = None
-
-    def _record_download(download: Download) -> None:
-        if not download_future.done():
-            download_future.set_result(download)
-
-    def _record_response(response) -> None:
-        # ``goto`` itself returns the status for normal navigations. This
-        # listener is only the *fallback* for the download case: ``goto``
-        # raises "Download is starting" before it can return a response, so
-        # we capture the main document's status here while it still arrives.
-        nonlocal navigation_status
-        if response.request.is_navigation_request():
-            navigation_status = response.status
-
-    page.on("download", _record_download)
-    page.on("response", _record_response)
-    try:
+    async with _PageObserver(page) as observer:
         navigation = await _navigate(page, url)
 
         # Defaults; the download branch overrides status/url, the
@@ -126,11 +189,13 @@ async def capture_page(page: Page, url: str, storage: Storage) -> CaptureResult:
             # never reaches the renderer, so there is nothing on the page to
             # capture; instead we read the download's bytes for the caller to
             # fold back into the HAR. The status/url come from the response
-            # listener (``goto`` raised before returning) and the download.
-            downloaded = await _recover_download(download_future, url)
-            if downloaded is not None:
-                http_status = navigation_status
-                final_url = downloaded.url
+            # observer (``goto`` raised before returning) and the download.
+            download = await observer.wait_download(url)
+            if download is not None:
+                downloaded = await _save_download(download)
+                if downloaded is not None:
+                    http_status = observer.navigation_status
+                    final_url = downloaded.url
         elif navigation.http_status is not None:
             plaintext, rendered_html, screenshot = await _capture_artifacts(
                 page, navigation.final_url, storage
@@ -146,9 +211,6 @@ async def capture_page(page: Page, url: str, storage: Storage) -> CaptureResult:
             screenshot=screenshot,
             download=downloaded,
         )
-    finally:
-        page.remove_listener("download", _record_download)
-        page.remove_listener("response", _record_response)
 
 
 @dataclass
@@ -180,15 +242,17 @@ async def _navigate(page: Page, url: str) -> _Navigation:
             final_url=final_url,
             is_download=False,
         )
-    except (PlaywrightError, asyncio.TimeoutError) as exception:
+    except PlaywrightError as exception:
         # Navigating to a URL that Chrome downloads (e.g. a PDF, once the
         # ``AlwaysOpenPdfExternally`` policy is active) makes ``page.goto``
         # raise "Download is starting" instead of returning a response. The
         # download event still fires, so the caller can capture its bytes;
         # there is no HTTP status to report (the response became a download).
-        if isinstance(exception, PlaywrightError) and "Download is starting" in (
-            exception.message or ""
-        ):
+        # ``page.goto`` and ``wait_for_load_state`` carry their own Playwright
+        # timeouts (raising Playwright's TimeoutError, a PlaywrightError
+        # subclass); they are not wrapped in asyncio.timeout, so no
+        # asyncio.TimeoutError can escape here.
+        if "Download is starting" in (exception.message or ""):
             logger.info("Navigation became a download for %s", url)
             return _Navigation(
                 http_status=None,
@@ -346,13 +410,14 @@ async def capture_current(
 ) -> CaptureResult:
     """Capture evidence from the page's *current* state, without navigating.
 
-    Used by the ``drive`` path of :meth:`Pravda.snapshot`: the caller has
-    already navigated to and interacted with *page* via a ``drive`` callback.
-    This captures the page-content artifacts (HTML/plaintext/
-    screenshot) from the current DOM, records the main-document status the
-    session observed (``navigation_status``) and the current URL
-    (``final_url``), and — when a download fired during the session — recovers
-    its bytes for the caller to fold back into the HAR.
+    Used by the ``drive`` path of :meth:`Pravda.snapshot` (via
+    :func:`capture_driven`): the caller has already navigated to and
+    interacted with *page* via a ``drive`` callback. This captures the
+    page-content artifacts (HTML/plaintext/screenshot) from the current DOM,
+    records the main-document status the session observed
+    (``navigation_status``) and the current URL (``final_url``), and — when a
+    download fired during the session — recovers its bytes for the caller to
+    fold back into the HAR.
 
     A download (e.g. a PDF the navigation handed off to) leaves the page at
     ``about:blank`` with nothing meaningful to render, so the page-content
@@ -384,24 +449,58 @@ async def capture_current(
     )
 
 
-async def _recover_download(
-    download_future: "asyncio.Future[Download]", url: str
-) -> DownloadedBody | None:
-    """Wait for the download event of a navigation that handed off as a
-    download, then save its bytes.
+async def capture_driven(
+    page: Page, url: str, drive: DriveCallback, storage: Storage
+) -> CaptureResult:
+    """Run the caller's *drive* callback against *page*, then capture the
+    resulting current page state.
 
-    Used by the default (no-``drive``) path, where ``page.goto`` itself
-    becomes a download (e.g. a PDF) and the event arrives asynchronously. The
-    ``drive`` path resolves its download event itself and reaches
-    :func:`_save_download` through :func:`capture_current`.
+    The latest main-frame document response and the first download are
+    observed for the duration of the callback so :func:`capture_current` can
+    record them. The callback owns every navigation and interaction —
+    including catching a ``Download is starting`` error from a PDF-like
+    navigation so the download can be recovered, just as the default path
+    (:func:`capture_page`) does internally. It runs under
+    :data:`DRIVE_TIMEOUT_S`; exceeding that budget raises
+    ``asyncio.TimeoutError`` (the caller persists an empty failed attempt).
+
+    A navigation that handed off to Chrome's downloader (e.g. a PDF) leaves
+    the page at ``about:blank``; if the download event has not fired by the
+    time the callback returns it is awaited (bounded) so the download becomes
+    the captured subject. Returns the evidence as a ``CaptureResult``; the
+    caller finalizes and persists.
+
+    A Playwright error or timeout raised by *drive* propagates to the caller's
+    failure handling (persisted as a failed attempt); any other exception
+    raised by *drive* propagates untouched once the observers are removed.
     """
-    try:
-        async with asyncio.timeout(DOWNLOAD_TIMEOUT_S):
-            download = await download_future
-    except asyncio.TimeoutError:
-        logger.warning("Download event did not fire for %s", url)
-        return None
-    return await _save_download(download)
+    async with _PageObserver(page) as observer:
+        # The callback is user code: bound it so a wedged callback cannot hang
+        # the capture. capture_current (below) is bounded internally.
+        async with asyncio.timeout(DRIVE_TIMEOUT_S):
+            await drive(page, url)
+
+        if (
+            page.url == "about:blank"
+            and observer.navigation_status is None
+            and observer.download is None
+        ):
+            raise ValueError(
+                "drive returned before navigating the page; "
+                "call page.goto(...) before returning"
+            )
+
+        # A navigation that handed off to Chrome's downloader (e.g. a PDF)
+        # leaves the page at about:blank; the download event may follow the
+        # callback's return. The observer stays installed while awaiting it so
+        # the download becomes the captured subject.
+        if observer.download is None and page.url == "about:blank":
+            await observer.wait_download(url)
+
+        final_url = observer.download.url if observer.download is not None else page.url
+        return await capture_current(
+            page, final_url, observer.navigation_status, observer.download, storage
+        )
 
 
 async def _save_download(download: Download) -> DownloadedBody | None:
