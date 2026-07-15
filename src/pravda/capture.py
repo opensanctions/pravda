@@ -49,13 +49,13 @@ class DownloadedBody:
 class CaptureResult:
     """Pure evidence captured from a page — no persistence concerns."""
 
-    http_status: int | None
-    error: str | None
-    final_url: str | None
-    plaintext: str | None
-    rendered_html: str | None
-    screenshot: str | None
-    download: DownloadedBody | None
+    http_status: int | None = None
+    error: str | None = None
+    final_url: str | None = None
+    plaintext: str | None = None
+    rendered_html: str | None = None
+    screenshot: str | None = None
+    download: DownloadedBody | None = None
 
 
 # A callback that navigates and interacts with a fresh recording page.

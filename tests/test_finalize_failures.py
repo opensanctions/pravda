@@ -42,19 +42,11 @@ async def test_context_close_failure_discards_evidence(browser, storage, tmp_pat
         raise OSError("context teardown lost the connection")
 
     context.close = failing_close
-    result, http_archive = await pravda_module._finalize_capture(
-        context, captured, path, "https://example.com/", storage
-    )
-
-    assert result.error == (
-        "browser context close failed: context teardown lost the connection"
-    )
-    assert result.http_status is None
-    assert result.final_url is None
-    assert result.plaintext is None
-    assert result.rendered_html is None
-    assert result.screenshot is None
-    assert http_archive is None
+    with pytest.raises(
+        pravda_module._CaptureFailure,
+        match="browser context close failed: context teardown lost the connection",
+    ):
+        await pravda_module._finalize_capture(context, captured, path, storage)
 
 
 @pytest.mark.asyncio
@@ -71,9 +63,7 @@ async def test_har_processing_timeout_propagates(
     monkeypatch.setattr(storage.fs, "_pipe_file", slow_pipe_file)
 
     with pytest.raises(asyncio.TimeoutError):
-        await pravda_module._finalize_capture(
-            context, captured, path, "https://example.com/", storage
-        )
+        await pravda_module._finalize_capture(context, captured, path, storage)
 
 
 @pytest.mark.asyncio

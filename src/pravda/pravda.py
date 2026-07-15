@@ -59,17 +59,8 @@ def _launch_options_header() -> dict[str, str]:
     }
 
 
-def _empty_result(error: str | None = None) -> CaptureResult:
-    """Return an evidence-less capture result."""
-    return CaptureResult(
-        http_status=None,
-        error=error,
-        final_url=None,
-        plaintext=None,
-        rendered_html=None,
-        screenshot=None,
-        download=None,
-    )
+class _CaptureFailure(Exception):
+    """A browser failure that should be persisted without evidence."""
 
 
 async def _connect(playwright, browser_ws_url: str) -> Browser:
@@ -87,37 +78,31 @@ async def _finalize_capture(
     context: BrowserContext,
     result: CaptureResult,
     http_archive_path: Path,
-    url: str,
     storage: Storage,
 ) -> tuple[CaptureResult, dict | None]:
     """Close the context and process its HAR as an atomic evidence operation."""
     try:
         async with asyncio.timeout(CONTEXT_CLOSE_TIMEOUT_S):
             await context.close()
-    except asyncio.TimeoutError:
-        error = f"browser context close exceeded {CONTEXT_CLOSE_TIMEOUT_S}s budget"
-        logger.error("%s for %s", error, url)
-        return _empty_result(error), None
-    except Exception as exception:
-        error = f"browser context close failed: {exception}"
-        logger.error("%s for %s", error, url)
-        return _empty_result(error), None
+    except asyncio.TimeoutError as error:
+        message = f"browser context close exceeded {CONTEXT_CLOSE_TIMEOUT_S}s budget"
+        raise _CaptureFailure(message) from error
+    except Exception as error:
+        raise _CaptureFailure(f"browser context close failed: {error}") from error
 
     if result.http_status is None:
         return result, None
     if not http_archive_path.exists():
-        error = "browser context closed without producing an HTTP archive"
-        logger.error("%s for %s", error, url)
-        return _empty_result(error), None
+        raise _CaptureFailure(
+            "browser context closed without producing an HTTP archive"
+        )
 
     async with asyncio.timeout(HAR_PROCESSING_TIMEOUT_S):
         http_archive = await capture_http_archive(
             http_archive_path, result.final_url, storage, download=result.download
         )
     if http_archive is None:
-        error = "browser context produced an invalid HTTP archive"
-        logger.error("%s for %s", error, url)
-        return _empty_result(error), None
+        raise _CaptureFailure("browser context produced an invalid HTTP archive")
     return result, http_archive
 
 
@@ -203,22 +188,16 @@ async def _capture_to_result(
                     result = await capture_driven(page, url, drive, storage)
 
                 return await _finalize_capture(
-                    context, result, http_archive_path, url, storage
+                    context, result, http_archive_path, storage
                 )
-        except DriveTimeoutError as error:
-            logger.error("%s for %s", error, url)
-            return _empty_result(str(error)), None
-        except PlaywrightError as error:
-            logger.error("Browser error for %s: %s", url, error.message)
-            return _empty_result(error.message), None
         except asyncio.TimeoutError:
             # Only the outer breaker is a persisted browser failure. Inner
             # storage and HAR-processing timeouts remain operational errors.
             if not deadline.expired():
                 raise
-            error = f"snapshot exceeded {SNAPSHOT_TIMEOUT_S}s wall-clock budget"
-            logger.error("%s for %s", error, url)
-            return _empty_result(error), None
+            raise _CaptureFailure(
+                f"snapshot exceeded {SNAPSHOT_TIMEOUT_S}s wall-clock budget"
+            )
     finally:
         await _cleanup(browser, playwright)
 
@@ -236,13 +215,18 @@ async def _capture(
 
     http_archive_dir = Path(tempfile.mkdtemp())
     try:
-        result, http_archive = await _capture_to_result(
-            url,
-            drive=drive,
-            browser_ws_url=browser_ws_url,
-            http_archive_dir=http_archive_dir,
-            storage=storage,
-        )
+        try:
+            result, http_archive = await _capture_to_result(
+                url,
+                drive=drive,
+                browser_ws_url=browser_ws_url,
+                http_archive_dir=http_archive_dir,
+                storage=storage,
+            )
+        except (DriveTimeoutError, PlaywrightError, _CaptureFailure) as error:
+            logger.error("Capture failed for %s: %s", url, error)
+            result = CaptureResult(error=str(error))
+            http_archive = None
     finally:
         shutil.rmtree(http_archive_dir, ignore_errors=True)
 
