@@ -62,8 +62,8 @@ async def capture_example():
 ### Capture a page
 
 By default, Pravda navigates to the URL, waits for the normal `load` state,
-captures the evidence, and persists the result. The complete pipeline is
-bounded by a wall-clock timeout:
+captures the evidence, and persists the result. Every phase of the complete
+pipeline has an explicit wall-clock deadline:
 
 ```python
 async def capture_example():
