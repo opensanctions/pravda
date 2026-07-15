@@ -23,6 +23,7 @@ async def _commit_snapshot(
     final_url: str | None = None,
     http_status: int | None = 200,
     rendered_html: str | None = None,
+    http_archive: dict | None = None,
 ) -> uuid.UUID:
     """Insert and commit a snapshot through the test database fixture."""
     record = SnapshotRecord(
@@ -32,6 +33,7 @@ async def _commit_snapshot(
         http_status=http_status,
         final_url=final_url,
         rendered_html=rendered_html,
+        http_archive=http_archive,
     )
     async with database() as session:
         session.add(record)
@@ -107,6 +109,109 @@ async def test_snapshot_prefix_is_none_when_navigation_never_committed(
     assert result.final_url is None
     assert result.prefix is None
     assert result.http_status is None
+
+
+@pytest.mark.asyncio
+async def test_snapshot_prefix_none_for_hostnameless_final_url_without_evidence(
+    pravda: Pravda, database
+):
+    """A hostname-less ``final_url`` (e.g. ``data:``) that stored no evidence
+    yields ``prefix`` None rather than raising — ``from_record`` never reaches
+    ``content_prefix`` for a row that references no blob."""
+    url = "https://example.com"
+    await _commit_snapshot(
+        database,
+        url,
+        datetime(2026, 1, 1, tzinfo=timezone.utc),
+        final_url="data:text/html,<h1>hi</h1>",
+        http_status=None,
+    )
+
+    result = (await pravda.snapshots(url))[0]
+
+    assert result.final_url == "data:text/html,<h1>hi</h1>"
+    assert result.prefix is None
+
+
+@pytest.mark.asyncio
+async def test_snapshot_prefix_none_without_evidence_even_for_host_url(
+    pravda: Pravda, database
+):
+    """``final_url`` alone is not enough: with no artifact and no HAR body,
+    ``prefix`` is None even though ``final_url`` has a hostname."""
+    url = "https://example.com"
+    await _commit_snapshot(
+        database,
+        url,
+        datetime(2026, 1, 1, tzinfo=timezone.utc),
+        final_url="https://example.com/page",
+        http_status=200,
+    )
+
+    result = (await pravda.snapshots(url))[0]
+
+    assert result.final_url == "https://example.com/page"
+    assert result.rendered_html is None
+    assert result.http_archive is None
+    assert result.prefix is None
+
+
+@pytest.mark.asyncio
+async def test_snapshot_prefix_resolved_when_har_references_body(
+    pravda: Pravda, database
+):
+    """A HAR manifest naming a response body counts as stored evidence, so
+    ``prefix`` is resolved from ``final_url``'s hostname even with no page
+    artifacts."""
+    url = "https://example.com"
+    await _commit_snapshot(
+        database,
+        url,
+        datetime(2026, 1, 1, tzinfo=timezone.utc),
+        final_url="https://example.com/page",
+        http_status=200,
+        http_archive={
+            "log": {
+                "entries": [
+                    {"response": {"content": {"_file": "abc.html"}}},
+                ]
+            }
+        },
+    )
+
+    result = (await pravda.snapshots(url))[0]
+
+    assert result.http_archive is not None
+    assert result.prefix is not None
+    assert result.prefix.endswith("example.com")
+
+
+@pytest.mark.asyncio
+async def test_snapshot_prefix_none_when_har_has_no_body_files(
+    pravda: Pravda, database
+):
+    """A HAR manifest with no ``response.content._file`` references nothing on
+    disk, so ``prefix`` is None."""
+    url = "https://example.com"
+    await _commit_snapshot(
+        database,
+        url,
+        datetime(2026, 1, 1, tzinfo=timezone.utc),
+        final_url="https://example.com/page",
+        http_status=200,
+        http_archive={
+            "log": {
+                "entries": [
+                    {"response": {"content": {"size": 0}}},
+                ]
+            }
+        },
+    )
+
+    result = (await pravda.snapshots(url))[0]
+
+    assert result.http_archive is not None
+    assert result.prefix is None
 
 
 @pytest.mark.asyncio

@@ -203,6 +203,40 @@ async def test_snapshot_drive_playwright_error_persists_failed_attempt(pravda: P
 
 
 @pytest.mark.asyncio
+async def test_snapshot_drive_hostnameless_final_url_returns_valid_snapshot(
+    pravda: Pravda,
+):
+    """A drive callback that ends on a hostname-less URL (``data:``) stores no
+    evidence: the snapshot is committed and returned with ``prefix`` None,
+    rather than committing and then crashing while constructing it.
+
+    A ``data:`` navigation commits no HTTP response, so Pravda skips the
+    page-content captures and records no HAR bodies — nothing is stored, so
+    there is no storage location to expose and the snapshot is returned
+    intact."""
+
+    async def drive(page, url):
+        await page.goto(url, wait_until="load")
+
+    snapshot = await pravda.snapshot("data:text/html,<h1>hi</h1>", drive=drive)
+
+    assert snapshot.url == "data:text/html,<h1>hi</h1>"
+    assert snapshot.final_url == "data:text/html,<h1>hi</h1>"
+    assert snapshot.error is None
+    assert snapshot.http_status is None
+    # Nothing was stored, so there is no storage location.
+    assert snapshot.prefix is None
+    assert snapshot.plaintext is None
+    assert snapshot.rendered_html is None
+    assert snapshot.screenshot is None
+    assert snapshot.http_archive is None
+
+    # Committed through Pravda's own session — visible to snapshots().
+    history = await pravda.snapshots("data:text/html,<h1>hi</h1>")
+    assert any(item.id == snapshot.id for item in history)
+
+
+@pytest.mark.asyncio
 async def test_snapshot_drive_requires_navigation(pravda: Pravda):
     async def drive(page, url):
         pass
