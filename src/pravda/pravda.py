@@ -49,6 +49,7 @@ from pravda.capture import (
     DriveCallback,
     capture_driven,
     capture_page,
+    is_http_url,
 )
 from pravda.db import SnapshotRecord
 from pravda.http_archive import capture_http_archive
@@ -602,6 +603,9 @@ class Pravda:
     ) -> Snapshot:
         """Capture a snapshot of *url* and persist it.
 
+        *url* must be an ``http(s)`` URL; a request for any other scheme is
+        rejected with ``ValueError`` before any browser or database work.
+
         Without *drive* this is the default behavior: start Playwright,
         connect to the remote browser, set up an isolated context recording a
         HAR, navigate (waiting for the normal ``load`` state), capture the
@@ -644,6 +648,8 @@ class Pravda:
         (``page.url``, or the download URL when a download was captured).
         Returns the public :class:`~pravda.snapshots.Snapshot` for the attempt.
         """
+        if not is_http_url(url):
+            raise ValueError(f"snapshot URL must be http(s), got {url!r}")
         return await _capture(
             url,
             drive=drive,

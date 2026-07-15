@@ -5,6 +5,7 @@ import tempfile
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlparse
 
 from bs4 import BeautifulSoup
 from playwright.async_api import Download, Page
@@ -37,6 +38,15 @@ DOWNLOAD_TIMEOUT_S = 15
 # runs after the callback and is bounded internally as in the default path.
 # A timeout here is a capture-phase failure (no evidence yet).
 DRIVE_TIMEOUT_S = 60
+
+
+def is_http_url(url: str) -> bool:
+    """Whether *url* is an HTTP(S) URL with a hostname."""
+    try:
+        parsed = urlparse(url)
+        return parsed.scheme in ("http", "https") and parsed.hostname is not None
+    except ValueError:
+        return False
 
 
 @dataclass
@@ -190,6 +200,10 @@ async def capture_page(page: Page, url: str, storage: Storage) -> CaptureResult:
             # capture; instead we read the download's bytes for the caller to
             # fold back into the HAR. The status/url come from the response
             # observer (``goto`` raised before returning) and the download.
+            # With no download captured the page is left on about:blank — no
+            # real landing URL — so final_url stays None rather than exposing
+            # a non-HTTP(S) value.
+            final_url = None
             download = await observer.wait_download(url)
             if download is not None:
                 downloaded = await _save_download(download)
@@ -470,6 +484,11 @@ async def capture_driven(
     the captured subject. Returns the evidence as a ``CaptureResult``; the
     caller finalizes and persists.
 
+    The callback must leave the page on an ``http(s)`` URL with a hostname.
+    Ending on any other scheme (``about:``, ``data:``, ``file:``, ``blob:``)
+    raises ``ValueError`` as callback misuse. A captured download becomes the
+    subject and its URL must satisfy the same requirement.
+
     A Playwright error or timeout raised by *drive* propagates to the caller's
     failure handling (persisted as a failed attempt); any other exception
     raised by *drive* propagates untouched once the observers are removed.
@@ -498,6 +517,15 @@ async def capture_driven(
             await observer.wait_download(url)
 
         final_url = observer.download.url if observer.download is not None else page.url
+
+        # Pravda captures web evidence from HTTP(S) URLs only. This applies to
+        # both the page left by the callback and a captured download URL.
+        if not is_http_url(final_url):
+            raise ValueError(
+                f"drive ended on a non-HTTP(S) URL {final_url!r}; "
+                "navigate to an http(s) URL before returning"
+            )
+
         return await capture_current(
             page, final_url, observer.navigation_status, observer.download, storage
         )

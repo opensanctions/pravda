@@ -203,37 +203,39 @@ async def test_snapshot_drive_playwright_error_persists_failed_attempt(pravda: P
 
 
 @pytest.mark.asyncio
-async def test_snapshot_drive_hostnameless_final_url_returns_valid_snapshot(
-    pravda: Pravda,
-):
-    """A drive callback that ends on a hostname-less URL (``data:``) stores no
-    evidence: the snapshot is committed and returned with ``prefix`` None,
-    rather than committing and then crashing while constructing it.
+@pytest.mark.parametrize(
+    "url",
+    [
+        "data:text/html,<h1>hi</h1>",
+        "about:blank",
+        "file:///etc/hosts",
+        "ftp://example.com/file",
+        "https:///missing-host",
+    ],
+)
+async def test_snapshot_rejects_non_http_url(pravda: Pravda, url: str):
+    """A requested URL that is not http(s) is rejected before any browser or
+    database work: it raises ValueError and persists nothing."""
+    with pytest.raises(ValueError, match="must be http"):
+        await pravda.snapshot(url)
 
-    A ``data:`` navigation commits no HTTP response, so Pravda skips the
-    page-content captures and records no HAR bodies — nothing is stored, so
-    there is no storage location to expose and the snapshot is returned
-    intact."""
+    assert await pravda.snapshots(url) == []
+
+
+@pytest.mark.asyncio
+async def test_snapshot_drive_rejects_non_http_final_url(pravda: Pravda):
+    """A drive callback that ends on a non-HTTP(S) URL (and captured no
+    download) is callback misuse: it raises ValueError and persists nothing —
+    a deliberate about:/data:/file:/blob: final state is not capturable
+    evidence."""
 
     async def drive(page, url):
-        await page.goto(url, wait_until="load")
+        await page.goto("data:text/html,<h1>hi</h1>", wait_until="load")
 
-    snapshot = await pravda.snapshot("data:text/html,<h1>hi</h1>", drive=drive)
+    with pytest.raises(ValueError, match="non-HTTP"):
+        await pravda.snapshot("https://example.com", drive=drive)
 
-    assert snapshot.url == "data:text/html,<h1>hi</h1>"
-    assert snapshot.final_url == "data:text/html,<h1>hi</h1>"
-    assert snapshot.error is None
-    assert snapshot.http_status is None
-    # Nothing was stored, so there is no storage location.
-    assert snapshot.prefix is None
-    assert snapshot.plaintext is None
-    assert snapshot.rendered_html is None
-    assert snapshot.screenshot is None
-    assert snapshot.http_archive is None
-
-    # Committed through Pravda's own session — visible to snapshots().
-    history = await pravda.snapshots("data:text/html,<h1>hi</h1>")
-    assert any(item.id == snapshot.id for item in history)
+    assert await pravda.snapshots("https://example.com") == []
 
 
 @pytest.mark.asyncio
