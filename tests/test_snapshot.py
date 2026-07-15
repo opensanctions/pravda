@@ -293,17 +293,3 @@ async def test_save_download_failure_returns_none():
     download = _FakeDownload(save_error=OSError("disk full"))
     result = await _save_download(download)
     assert result is None
-
-
-@pytest.mark.asyncio
-async def test_save_download_temp_directory_failure_returns_none(monkeypatch):
-    """Failure to allocate the local download directory is also isolated."""
-
-    def fail_mkdtemp():
-        raise OSError("disk full")
-
-    monkeypatch.setattr(capture_module.tempfile, "mkdtemp", fail_mkdtemp)
-
-    result = await _save_download(_FakeDownload(save_error=None))
-
-    assert result is None

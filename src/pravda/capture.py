@@ -1,6 +1,5 @@
 import asyncio
 import logging
-import shutil
 import tempfile
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -274,10 +273,8 @@ async def _navigate(page: Page, url: str) -> _Navigation:
                 final_url=page.url or url,
                 is_download=True,
             )
-        error = str(exception) or (
-            f"Timeout {LOAD_TIMEOUT_MS}ms exceeded waiting for 'load'"
-        )
-        logger.warning("Timeout for %s: %s", url, error)
+        error = str(exception)
+        logger.warning("Navigation error for %s: %s", url, error)
         return _Navigation(
             http_status=http_status,
             error=error,
@@ -405,7 +402,7 @@ async def _capture_one(
     """
     try:
         data = await callback()
-    except (asyncio.TimeoutError, PlaywrightTimeout):
+    except PlaywrightTimeout:
         logger.warning("Timeout capturing %s for %s", name, url)
         return None
     except PlaywrightError as exception:
@@ -544,22 +541,19 @@ async def _save_download(download: Download) -> DownloadedBody | None:
     and ``download.path()`` throws in that mode, so we can't read the file
     Playwright already wrote — ``save_as`` is the only way to get the bytes.
     """
-    download_dir: Path | None = None
     try:
-        download_dir = Path(tempfile.mkdtemp())
-        async with asyncio.timeout(DOWNLOAD_TIMEOUT_S):
-            await download.save_as(str(download_dir / "download"))
-            return DownloadedBody(
-                url=download.url,
-                data=(download_dir / "download").read_bytes(),
-                suggested_filename=download.suggested_filename,
-            )
+        with tempfile.TemporaryDirectory() as download_dir:
+            download_path = Path(download_dir) / "download"
+            async with asyncio.timeout(DOWNLOAD_TIMEOUT_S):
+                await download.save_as(str(download_path))
+                return DownloadedBody(
+                    url=download.url,
+                    data=download_path.read_bytes(),
+                    suggested_filename=download.suggested_filename,
+                )
     except asyncio.TimeoutError:
         logger.warning("Timeout saving download for %s", download.url)
         return None
     except Exception as exception:
         logger.warning("Failed to save download for %s: %s", download.url, exception)
         return None
-    finally:
-        if download_dir is not None:
-            shutil.rmtree(download_dir, ignore_errors=True)

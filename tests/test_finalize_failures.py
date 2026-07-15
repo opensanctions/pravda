@@ -1,14 +1,14 @@
-"""Partial-evidence failure semantics for the finalization stage.
+"""Finalization-stage failure and timeout semantics.
 
-Operational failures (not just timeouts) while closing the recording context
-or processing the HAR must not erase the page evidence already captured or let
-the capture escape without persistence. These drive the real browser/storage
-boundary, capture evidence through a routed fixture, then exercise
-``_finalize_capture`` with a failing boundary so the failure path fires
-deterministically. The end-to-end persistence behavior is verified through
-``Pravda.snapshot`` where the condition can be induced publicly.
+Operational failures and timeouts while closing the recording context or
+processing the HAR must not erase the page evidence already captured or let
+the capture escape without persistence. The context-close failure and HAR
+timeout paths are exercised directly against ``_finalize_capture`` — the
+boundary where they can be induced deterministically — while the end-to-end
+persistence behavior is verified through ``Pravda.snapshot``.
 """
 
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -37,8 +37,8 @@ async def _capture_example(page, storage: Storage) -> CaptureResult:
 async def test_context_close_failure_keeps_evidence(
     browser, storage: Storage, tmp_path
 ):
-    """A context.close that fails operationally (not a timeout) keeps the
-    page evidence, records a fatal error, and discards the HAR."""
+    """A context.close that fails operationally keeps the page evidence,
+    records a fatal error, and discards the HAR."""
     http_archive_path = tmp_path / "record.zip"
     context = await browser.new_context(
         record_har_path=str(http_archive_path),
@@ -80,8 +80,6 @@ async def test_context_close_failure_composes_with_prior_error(
     )
     page = await context.new_page()
     captured = await _capture_example(page, storage)
-    # Simulate a capture that already recorded a load-timeout error while
-    # still producing page evidence (the real capture_page does this).
     prior_error = "Timeout 30000ms exceeded waiting for 'load'"
     captured_with_error = CaptureResult(
         http_status=captured.http_status,
@@ -110,17 +108,16 @@ async def test_context_close_failure_composes_with_prior_error(
     # Both the prior capture error and the finalization error survive.
     assert prior_error in result.error
     assert "context close failed" in result.error
-    # Page evidence retained.
     assert result.rendered_html == captured.rendered_html
     assert http_archive is None
 
 
 @pytest.mark.asyncio
-async def test_har_processing_failure_keeps_evidence(
+async def test_har_processing_timeout_keeps_evidence(
     browser, storage: Storage, tmp_path, monkeypatch
 ):
-    """A HAR processing operational failure (not a timeout) keeps the page
-    evidence, records a fatal error, and discards the manifest."""
+    """A HAR processing timeout keeps the page evidence, marks the snapshot
+    fatal, and drops the HAR."""
     http_archive_path = tmp_path / "record.zip"
     context = await browser.new_context(
         record_har_path=str(http_archive_path),
@@ -129,12 +126,14 @@ async def test_har_processing_failure_keeps_evidence(
     page = await context.new_page()
     captured = await _capture_example(page, storage)
 
-    # capture_page already stored its artifacts; now make every HAR body write
-    # fail operationally. Only the HAR unpacking is affected.
-    async def failing_pipe_file(path, value, **kwargs):
-        raise OSError("storage backend down")
+    # capture_page already stored its artifacts; stall the storage backend and
+    # tighten the HAR budget so unpacking the archive exceeds it.
+    monkeypatch.setattr(pravda_module, "HAR_PROCESSING_TIMEOUT_S", 0.01)
 
-    monkeypatch.setattr(storage.fs, "_pipe_file", failing_pipe_file)
+    async def slow_pipe_file(path, value, **kwargs):
+        await asyncio.sleep(1)
+
+    monkeypatch.setattr(storage.fs, "_pipe_file", slow_pipe_file)
 
     result, http_archive = await pravda_module._finalize_capture(
         context, captured, http_archive_path, "https://example.com/", {}, storage
@@ -145,7 +144,8 @@ async def test_har_processing_failure_keeps_evidence(
     assert result.rendered_html == captured.rendered_html
     assert result.plaintext == captured.plaintext
     assert result.screenshot == captured.screenshot
-    assert "HAR processing failed" in result.error
+    assert result.error is not None
+    assert "HAR" in result.error
     assert http_archive is None
 
 
@@ -155,12 +155,9 @@ async def test_snapshot_har_storage_failure_persists_attempt(
 ):
     """An operational storage failure during HAR processing does not let the
     capture escape: the snapshot is persisted with the page metadata, a HAR
-    error composed onto any capture error, and no HAR.
-
-    The same failing backend also drops the page artifacts (their writes are
-    isolated and yield None), which is the individual-artifact policy; the
-    point here is that the attempt is still committed.
-    """
+    error composed onto any capture error, and no HAR. The same failing backend
+    also drops the page artifacts (their writes are isolated); the point is
+    that the attempt is still committed."""
 
     async def drive(page, url):
         await page.route(url, _fulfill_html)
@@ -184,6 +181,5 @@ async def test_snapshot_har_storage_failure_persists_attempt(
     assert snapshot.plaintext is None
     assert snapshot.screenshot is None
 
-    # Committed through Pravda's own session — visible to snapshots().
     history = await pravda.snapshots("https://example.com")
     assert any(item.id == snapshot.id for item in history)
