@@ -4,6 +4,7 @@ import asyncio
 from pathlib import Path
 
 import pytest
+from playwright.async_api import Error as PlaywrightError
 
 import pravda.pravda as pravda_module
 from pravda import Pravda
@@ -100,10 +101,10 @@ async def test_context_close_failure_composes_with_prior_error(
 
 
 @pytest.mark.asyncio
-async def test_har_processing_timeout_keeps_evidence(
+async def test_har_processing_timeout_propagates(
     browser, storage: Storage, tmp_path, monkeypatch
 ):
-    """A HAR processing timeout keeps evidence, marks fatal, and drops the HAR."""
+    """A HAR processing timeout fails finalization."""
     http_archive_path = tmp_path / "record.zip"
     context = await browser.new_context(
         record_har_path=str(http_archive_path),
@@ -120,45 +121,40 @@ async def test_har_processing_timeout_keeps_evidence(
 
     monkeypatch.setattr(storage.fs, "_pipe_file", slow_pipe_file)
 
-    result, http_archive = await pravda_module._finalize_capture(
-        context, captured, http_archive_path, "https://example.com/", {}, storage
-    )
-
-    assert result.http_status == 200
-    assert result.final_url == "https://example.com/"
-    assert result.rendered_html == captured.rendered_html
-    assert result.plaintext == captured.plaintext
-    assert result.screenshot == captured.screenshot
-    assert result.error is not None
-    assert "HAR" in result.error
-    assert http_archive is None
+    with pytest.raises(asyncio.TimeoutError):
+        await pravda_module._finalize_capture(
+            context, captured, http_archive_path, "https://example.com/", {}, storage
+        )
 
 
 @pytest.mark.asyncio
-async def test_snapshot_har_storage_failure_persists_attempt(
+async def test_snapshot_har_storage_failure_propagates_without_persisting(
     pravda: Pravda, monkeypatch
 ):
-    """A storage failure during HAR processing still persists the attempt."""
+    """A storage failure during HAR processing propagates and persists nothing."""
 
     async def drive(page, url):
         await page.route(url, _fulfill_html)
         await page.goto(url, wait_until="load")
 
-    async def failing_pipe_file(path, value, **kwargs):
-        raise OSError("storage backend down")
+        async def fail_screenshot(**kwargs):
+            raise PlaywrightError("screenshot unavailable")
 
-    monkeypatch.setattr(pravda._storage.fs, "_pipe_file", failing_pipe_file)
+        page.screenshot = fail_screenshot
 
-    snapshot = await pravda.snapshot("https://example.com", drive=drive)
+    original_pipe_file = pravda._storage.fs._pipe_file
+    writes = 0
 
-    assert snapshot.error is not None
-    assert "HAR processing failed" in snapshot.error
-    assert snapshot.http_archive is None
-    assert snapshot.http_status == 200
-    assert snapshot.final_url == "https://example.com/"
-    assert snapshot.rendered_html is None
-    assert snapshot.plaintext is None
-    assert snapshot.screenshot is None
+    async def fail_har_pipe_file(path, value, **kwargs):
+        nonlocal writes
+        writes += 1
+        if writes > 2:
+            raise OSError("storage backend down")
+        await original_pipe_file(path, value, **kwargs)
 
-    history = await pravda.snapshots("https://example.com")
-    assert any(item.id == snapshot.id for item in history)
+    monkeypatch.setattr(pravda._storage.fs, "_pipe_file", fail_har_pipe_file)
+
+    with pytest.raises(OSError, match="storage backend down"):
+        await pravda.snapshot("https://example.com", drive=drive)
+
+    assert await pravda.snapshots("https://example.com") == []

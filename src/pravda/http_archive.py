@@ -35,18 +35,12 @@ async def capture_http_archive(
     return manifest
 
 
-async def _store_body(
-    download: DownloadedBody, url: str, storage: Storage
-) -> str | None:
-    """Store a downloaded body, returning its name or ``None`` on timeout."""
+async def _store_body(download: DownloadedBody, url: str, storage: Storage) -> str:
+    """Store a downloaded body within the storage-write deadline."""
     ext = Path(download.suggested_filename).suffix
     name = cas_name(download.data, ext)
-    try:
-        async with asyncio.timeout(STORAGE_WRITE_TIMEOUT_S):
-            await storage.put_blob(name, download.data, url)
-    except asyncio.TimeoutError:
-        logger.warning("Timeout storing download body for %s", download.url)
-        return None
+    async with asyncio.timeout(STORAGE_WRITE_TIMEOUT_S):
+        await storage.put_blob(name, download.data, url)
     return name
 
 
@@ -61,8 +55,6 @@ async def _inject_download(
         if content.get("_file"):
             continue
         name = await _store_body(download, url, storage)
-        if name is None:
-            return
         content["_file"] = name
         content["size"] = len(download.data)
         return

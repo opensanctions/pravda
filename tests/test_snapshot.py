@@ -159,10 +159,10 @@ async def test_capture_page_dom_capture_timeout_skips_content(
 
 
 @pytest.mark.asyncio
-async def test_capture_page_storage_write_timeout_skips_artifacts(
+async def test_capture_page_storage_write_timeout_propagates(
     page: Page, storage: Storage, monkeypatch
 ):
-    """Artifact writes that exceed their budget yield None, not exceptions."""
+    """An artifact write exceeding its budget propagates the timeout."""
     fixture_html = (FIXTURES / "example.html").read_text()
 
     await page.route(
@@ -181,45 +181,8 @@ async def test_capture_page_storage_write_timeout_skips_artifacts(
 
     monkeypatch.setattr(storage.fs, "_pipe_file", slow_pipe_file)
 
-    result = await capture_page(page, "https://example.com", storage)
-
-    assert result.http_status == 200
-    assert result.error is None
-    assert result.final_url == "https://example.com/"
-    assert result.plaintext is None
-    assert result.rendered_html is None
-    assert result.screenshot is None
-
-
-@pytest.mark.asyncio
-async def test_capture_page_storage_failure_skips_artifacts(
-    page: Page, storage: Storage, monkeypatch
-):
-    """Artifact writes that fail operationally yield None, not exceptions."""
-    fixture_html = (FIXTURES / "example.html").read_text()
-
-    await page.route(
-        "https://example.com",
-        lambda route: route.fulfill(
-            body=fixture_html,
-            headers={"content-type": "text/html"},
-        ),
-    )
-
-    # Make every storage write fail operationally at the fsspec boundary.
-    async def failing_pipe_file(path, value, **kwargs):
-        raise OSError("storage backend down")
-
-    monkeypatch.setattr(storage.fs, "_pipe_file", failing_pipe_file)
-
-    result = await capture_page(page, "https://example.com", storage)
-
-    assert result.http_status == 200
-    assert result.error is None
-    assert result.final_url == "https://example.com/"
-    assert result.plaintext is None
-    assert result.rendered_html is None
-    assert result.screenshot is None
+    with pytest.raises(asyncio.TimeoutError):
+        await capture_page(page, "https://example.com", storage)
 
 
 class _FakeDownload:

@@ -31,9 +31,9 @@ logger = logging.getLogger(__name__)
 
 BROWSER_CHANNEL = "chrome"
 
-# Each pipeline phase has its own wall-clock limit. Finalization failures keep
-# page evidence but discard the HAR; cleanup is best-effort; commit failures
-# propagate. Non-Playwright callback exceptions and cancellation also propagate.
+# Each pipeline phase has its own wall-clock limit. Browser context failures keep
+# page evidence but discard the HAR; cleanup is best-effort. Storage, commit,
+# non-Playwright callback failures, and cancellation propagate.
 PLAYWRIGHT_START_TIMEOUT_S = 10
 CONNECT_TIMEOUT_MS = 10_000
 SETUP_TIMEOUT_S = 10
@@ -177,28 +177,12 @@ async def _finalize_capture(
     ):
         return result, None
 
-    http_archive: dict | None = None
-    har_error: str | None = None
     stage_start = time.monotonic()
-    try:
-        async with asyncio.timeout(HAR_PROCESSING_TIMEOUT_S):
-            http_archive = await capture_http_archive(
-                http_archive_path, result.final_url, storage, download=result.download
-            )
-    except asyncio.TimeoutError:
-        har_error = (
-            f"HAR processing exceeded {HAR_PROCESSING_TIMEOUT_S}s "
-            f"budget; http archive discarded"
+    async with asyncio.timeout(HAR_PROCESSING_TIMEOUT_S):
+        http_archive = await capture_http_archive(
+            http_archive_path, result.final_url, storage, download=result.download
         )
-    except Exception as exception:
-        har_error = f"HAR processing failed ({exception}); http archive discarded"
     stages["har"] = time.monotonic() - stage_start
-    if har_error is not None:
-        logger.error("%s for %s", har_error, url)
-        return (
-            replace(result, error=_compose_error(result.error, har_error)),
-            None,
-        )
     return result, http_archive
 
 
@@ -374,9 +358,10 @@ class Pravda:
         *drive*, the callback owns navigation and interaction on the supplied
         recording page; Pravda then captures its current state.
 
-        Each phase is bounded. Playwright failures are persisted, while other
-        callback exceptions and persistence errors propagate. Finalization
-        failures retain captured page evidence but discard the HAR.
+        Each phase is bounded. Playwright failures are persisted, while storage,
+        non-Playwright callback, and persistence errors propagate. Browser
+        context-finalization failures retain captured page evidence but discard
+        the HAR.
         """
         if not is_http_url(url):
             raise ValueError(f"snapshot URL must be http(s), got {url!r}")

@@ -175,19 +175,10 @@ async def _navigate(page: Page, url: str) -> _Navigation:
         )
 
 
-async def _store_blob(
-    name: str, data: bytes, extension: str, url: str, storage: Storage
-) -> str | None:
-    """Store one artifact, returning ``None`` on timeout or failure."""
-    try:
-        async with asyncio.timeout(STORAGE_WRITE_TIMEOUT_S):
-            return await storage.put_blob(cas_name(data, extension), data, url)
-    except asyncio.TimeoutError:
-        logger.warning("Timeout storing %s for %s", name, url)
-        return None
-    except Exception as exception:
-        logger.warning("Failed to store %s for %s: %s", name, url, exception)
-        return None
+async def _store_blob(data: bytes, extension: str, url: str, storage: Storage) -> str:
+    """Store one artifact within the storage-write deadline."""
+    async with asyncio.timeout(STORAGE_WRITE_TIMEOUT_S):
+        return await storage.put_blob(cas_name(data, extension), data, url)
 
 
 async def _capture_artifacts(
@@ -208,15 +199,13 @@ async def _capture_artifacts(
 
     rendered_html = plaintext = None
     if html is not None:
-        rendered_html = await _store_blob(
-            "rendered_html", html.encode(), "html", url, storage
-        )
+        rendered_html = await _store_blob(html.encode(), "html", url, storage)
 
         # Derive text from the DOM so hidden and injected nodes are included.
         text = " ".join(
             BeautifulSoup(html, "html.parser").get_text(separator=" ").split()
         )
-        plaintext = await _store_blob("plaintext", text.encode(), "txt", url, storage)
+        plaintext = await _store_blob(text.encode(), "txt", url, storage)
 
     # Clipping is the reliable way to cap full-page screenshots to viewport width.
     viewport_size = page.viewport_size
@@ -243,7 +232,7 @@ async def _capture_artifacts(
 async def _capture_one(
     name: str, callback, url: str, extension: str, storage: Storage
 ) -> str | None:
-    """Capture and store one artifact, returning ``None`` on failure."""
+    """Capture and store one artifact, returning ``None`` on capture failure."""
     try:
         data = await callback()
     except PlaywrightTimeout:
@@ -253,7 +242,7 @@ async def _capture_one(
         logger.warning("Failed to capture %s for %s: %s", name, url, exception)
         return None
     blob = data.encode() if isinstance(data, str) else data
-    return await _store_blob(name, blob, extension, url, storage)
+    return await _store_blob(blob, extension, url, storage)
 
 
 async def capture_current(

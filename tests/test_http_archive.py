@@ -75,10 +75,8 @@ async def test_download_body_folded_into_har(storage: Storage):
 
 
 @pytest.mark.asyncio
-async def test_download_body_storage_timeout_leaves_entry_bodyless(
-    storage: Storage, monkeypatch
-):
-    """A timed-out download write leaves its HAR entry bodyless."""
+async def test_download_body_storage_timeout_propagates(storage: Storage, monkeypatch):
+    """A timed-out download write fails HAR processing."""
     pdf_bytes = b"%PDF-1.7 real-ish bytes\n%EOF"
     manifest = {
         "log": {
@@ -105,14 +103,12 @@ async def test_download_body_storage_timeout_leaves_entry_bodyless(
 
     monkeypatch.setattr(storage.fs, "_pipe_file", slow_pipe_file)
 
-    manifest = await capture_http_archive(
-        zip_path,
-        PAGE_URL,
-        storage,
-        download=DownloadedBody(
-            url=PAGE_URL, data=pdf_bytes, suggested_filename="doc.pdf"
-        ),
-    )
-
-    entry = manifest["log"]["entries"][0]["response"]["content"]
-    assert "_file" not in entry
+    with pytest.raises(asyncio.TimeoutError):
+        await capture_http_archive(
+            zip_path,
+            PAGE_URL,
+            storage,
+            download=DownloadedBody(
+                url=PAGE_URL, data=pdf_bytes, suggested_filename="doc.pdf"
+            ),
+        )
