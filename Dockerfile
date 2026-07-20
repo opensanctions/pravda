@@ -1,5 +1,16 @@
 FROM mcr.microsoft.com/playwright:v1.61.0-noble
 
+# tini as PID 1 so xvfb-run's SIGUSR1 readiness handshake with Xvfb
+# works. Without a real init, PID 1 signal semantics on Linux drop
+# the SIGUSR1 that would interrupt xvfb-run's `wait`, and the
+# `playwright run-server` line is never reached.
+#
+# docker-compose has `init: true` for this purpose.
+# Cloud Run recommends tini https://docs.cloud.google.com/run/docs/configuring/execution-environments
+RUN apt-get update && apt-get install -y --no-install-recommends tini \
+    && rm -rf /var/lib/apt/lists/*
+ENTRYPOINT ["/usr/bin/tini", "--"]
+
 # The base image has browsers but not the playwright npm package.
 # Install it globally so xvfb-run doesn't hang on npx download.
 RUN npm install -g playwright@1.61.0
