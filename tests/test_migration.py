@@ -58,7 +58,7 @@ async def _snapshot_columns(engine) -> dict[str, str]:
 async def _alembic_version(engine) -> str | None:
     async with engine.connect() as conn:
         return (
-            await conn.execute(text("SELECT version_num FROM alembic_version"))
+            await conn.execute(text("SELECT version_num FROM pravda_alembic_version"))
         ).scalar()
 
 
