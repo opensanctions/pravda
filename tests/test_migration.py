@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 import pravda
 from pravda.db import Base
 
-DATABASE_URL = "postgresql+asyncpg://pravda:pravda@localhost:5432/pravda"
+DATABASE_URL = "postgresql+psycopg://pravda:pravda@localhost:5432/pravda"
 
 # Literal (not reflected from Base.metadata) so the test asserts what
 # migrations produced, not what the models declare.

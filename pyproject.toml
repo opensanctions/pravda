@@ -4,7 +4,7 @@ build-backend = "uv_build"
 
 [project]
 name = "opensanctions-pravda"
-version = "0.1.5"
+version = "0.1.6"
 description = "Durable web evidence capture with a remote browser, Postgres, and content-addressed storage"
 readme = "README.md"
 requires-python = ">=3.13"
@@ -31,10 +31,10 @@ classifiers = [
 ]
 dependencies = [
     "alembic>=1.18.5",
-    "asyncpg>=0.31.0",
     "beautifulsoup4>=4.15.0",
     "fsspec[gcs]>=2026.4.0",
     "playwright==1.61.0",
+    "psycopg[binary]>=3.3.4",
     "sqlalchemy[asyncio]>=2.0.50",
 ]
 

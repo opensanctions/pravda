@@ -36,7 +36,7 @@ connection.
 from pravda import Pravda, PravdaConfig
 
 config = PravdaConfig(
-    database_url="postgresql+asyncpg://pravda:pravda@localhost:5432/pravda",
+    database_url="postgresql+psycopg://pravda:pravda@localhost:5432/pravda",
     browser_ws_url="ws://localhost:3000",
     storage_base_path="./data",
 )
@@ -52,7 +52,7 @@ async def capture_example():
 `PravdaConfig` takes three settings, supplied explicitly per instance:
 
 - `database_url` — async SQLAlchemy Postgres URL
-  (`postgresql+asyncpg://user:pass@host/db`).
+  (`postgresql+psycopg://user:pass@host/db`).
 - `browser_ws_url` — remote Playwright WebSocket URL.
 - `storage_base_path` — fsspec storage URL, such as `./data`, `s3://bucket`,
   or `gs://bucket`.
@@ -119,7 +119,7 @@ environment variable is required:
 import pravda
 
 async def setup():
-    await pravda.migrate("postgresql+asyncpg://user:pass@host/db")
+    await pravda.migrate("postgresql+psycopg://user:pass@host/db")
 ```
 
 `migrate()` runs the packaged revisions through Alembic (not
@@ -183,9 +183,9 @@ changing models in `pravda/db.py`, the developer `alembic` command reads
 `DATABASE_URL` and points at the packaged scripts via `alembic.ini`:
 
 ```bash
-DATABASE_URL=postgresql+asyncpg://pravda:pravda@localhost:5432/pravda \
+DATABASE_URL=postgresql+psycopg://pravda:pravda@localhost:5432/pravda \
   uv run alembic upgrade head
-DATABASE_URL=postgresql+asyncpg://pravda:pravda@localhost:5432/pravda \
+DATABASE_URL=postgresql+psycopg://pravda:pravda@localhost:5432/pravda \
   uv run alembic revision --autogenerate -m "describe the change"
 ```
 

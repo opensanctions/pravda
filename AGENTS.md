@@ -19,7 +19,6 @@ Pravda is an async Python library for capturing durable web evidence with a remo
 - Runtime configuration is explicit and instance-scoped. Applications construct `PravdaConfig(database_url, browser_ws_url, storage_base_path)` and pass it to a long-lived `Pravda` instance, which owns its engine, session factory, and storage.
 - The Alembic migration scripts live inside the package at `src/pravda/migrations` so they ship with installed distributions. The public `pravda.migrate(database_url)` API upgrades a caller-supplied database URL to head without touching the environment; the developer `alembic` command still reads `DATABASE_URL` from its command environment.
 - Add dependencies with `uv add`; do not edit `pyproject.toml` manually.
-- Do not create git commits; the user manages version control.
 
 ## Public behavior
 
@@ -42,9 +41,9 @@ Chrome is configured with `AlwaysOpenPdfExternally`, so PDFs and similar viewer-
 The scripts live inside the package at `src/pravda/migrations`; the repository-root `alembic.ini` points the developer command at them. After changing `src/pravda/db.py`, generate and review a migration:
 
 ```bash
-DATABASE_URL=postgresql+asyncpg://pravda:pravda@localhost:5432/pravda \
+DATABASE_URL=postgresql+psycopg://pravda:pravda@localhost:5432/pravda \
   uv run alembic upgrade head
-DATABASE_URL=postgresql+asyncpg://pravda:pravda@localhost:5432/pravda \
+DATABASE_URL=postgresql+psycopg://pravda:pravda@localhost:5432/pravda \
   uv run alembic revision --autogenerate -m "describe the change"
 ```
 

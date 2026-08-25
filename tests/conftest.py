@@ -9,7 +9,7 @@ from pravda import Pravda, PravdaConfig
 from pravda.db import Base, SnapshotRecord
 from pravda.storage import Storage
 
-DATABASE_URL = "postgresql+asyncpg://pravda:pravda@localhost:5432/pravda"
+DATABASE_URL = "postgresql+psycopg://pravda:pravda@localhost:5432/pravda"
 BROWSER_WS_URL = "ws://localhost:3000"
 
 
