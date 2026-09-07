@@ -1,4 +1,4 @@
-FROM mcr.microsoft.com/playwright:v1.61.0-noble
+FROM mcr.microsoft.com/playwright:v1.62.0-noble
 
 # tini as PID 1 so xvfb-run's SIGUSR1 readiness handshake with Xvfb
 # works. Without a real init, PID 1 signal semantics on Linux drop
@@ -13,7 +13,7 @@ ENTRYPOINT ["/usr/bin/tini", "--"]
 
 # The base image has browsers but not the playwright npm package.
 # Install it globally so xvfb-run doesn't hang on npx download.
-RUN npm install -g playwright@1.61.0
+RUN npm install -g playwright@1.62.0
 
 # Install Google Chrome and its system dependencies.
 # The base image has Chromium but not branded Chrome.

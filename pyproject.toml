@@ -34,7 +34,7 @@ dependencies = [
     "alembic>=1.18.5",
     "beautifulsoup4>=4.15.0",
     "fsspec[gcs]>=2026.4.0",
-    "playwright==1.61.0",
+    "playwright==1.62.0",
     "psycopg[binary]>=3.3.4",
     "sqlalchemy[asyncio]>=2.0.50",
 ]
