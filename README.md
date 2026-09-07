@@ -3,8 +3,8 @@
 Pravda is a Python library for durable web evidence capture. It drives a
 remote Playwright browser to preserve rendered HTML, plaintext, full-page
 screenshots, metadata, and HAR recordings with response bodies. Snapshots are
-recorded in Postgres and on any fsspec-compatible backend for later inspection
-or comparison.
+recorded in a SQL database (PostgreSQL or SQLite) and on any fsspec-compatible
+backend for later inspection or comparison.
 
 Pravda is a **library, not a service**: it connects directly from the caller's
 process to the browser, database, and storage backend. Applications own that
@@ -13,7 +13,7 @@ infrastructure (see [Infrastructure](#infrastructure)).
 - **Python** 3.13+
 - **Browser**: a remote Playwright Chromium WebSocket endpoint (headed Chrome
   under xvfb). The browser is a client connection; Pravda does not launch one.
-- **Database**: PostgreSQL, upgraded to Pravda's schema with the
+- **Database**: PostgreSQL or SQLite, upgraded to Pravda's schema with the
   [migration helper](#database-migrations).
 - **Storage**: any fsspec URL (local path, `s3://`, `gs://`, …) for
   content-addressed artifacts.
@@ -51,8 +51,8 @@ async def capture_example():
 
 `PravdaConfig` takes three settings, supplied explicitly per instance:
 
-- `database_url` — async SQLAlchemy Postgres URL
-  (`postgresql+psycopg://user:pass@host/db`).
+- `database_url` — async SQLAlchemy URL, such as
+  `postgresql+psycopg://user:pass@host/db` or `sqlite+aiosqlite:///path/to.db`.
 - `browser_ws_url` — remote Playwright WebSocket URL.
 - `storage_base_path` — fsspec storage URL, such as `./data`, `s3://bucket`,
   or `gs://bucket`.
@@ -111,9 +111,9 @@ async def print_history():
 ## Database migrations
 
 Alembic owns the Pravda schema; the migration scripts ship inside the
-distribution. Bring a database up to the current schema head from application
-startup — the database URL is passed explicitly and **no** `DATABASE_URL`
-environment variable is required:
+distribution. Bring a PostgreSQL or SQLite database up to the current schema
+head from application startup — the database URL is passed explicitly and **no**
+`DATABASE_URL` environment variable is required:
 
 ```python
 import pravda
@@ -156,8 +156,8 @@ launch or manage it:
   docker run --rm --init -p 3000:3000 \
     ghcr.io/opensanctions/pravda-browser:latest
   ```
-- **Postgres** — a database the application provisions and
-  [migrates](#database-migrations).
+- **Database** — a PostgreSQL or SQLite database the application provisions
+  and [migrates](#database-migrations).
 - **Storage** — an fsspec backend the application points at via
   `storage_base_path`.
 

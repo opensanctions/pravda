@@ -30,6 +30,7 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 dependencies = [
+    "aiosqlite>=0.22.1",
     "alembic>=1.18.5",
     "beautifulsoup4>=4.15.0",
     "fsspec[gcs]>=2026.4.0",

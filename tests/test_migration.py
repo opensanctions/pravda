@@ -1,14 +1,16 @@
 """Tests for the public migration API and packaged migration resources."""
 
 import inspect
+import uuid
+from datetime import datetime
 from importlib.resources import files
 
 import pytest
-from sqlalchemy import text
-from sqlalchemy.ext.asyncio import create_async_engine
+from sqlalchemy import select, text
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 import pravda
-from pravda.db import Base
+from pravda.db import Base, SnapshotRecord
 
 DATABASE_URL = "postgresql+psycopg://pravda:pravda@localhost:5432/pravda"
 
@@ -90,6 +92,56 @@ async def test_migrate_to_head_is_idempotent(empty_database):
     await pravda.migrate(DATABASE_URL)
     assert await _alembic_version(empty_database) == first_version
     assert await _snapshot_columns(empty_database) == EXPECTED_COLUMNS
+
+
+@pytest.mark.asyncio
+async def test_migrate_supports_sqlite(tmp_path):
+    """The packaged migrations and models run unchanged on SQLite."""
+    database_url = f"sqlite+aiosqlite:///{tmp_path}/pravda.db"
+    await pravda.migrate(database_url)
+
+    engine = create_async_engine(database_url)
+    try:
+        async with engine.connect() as conn:
+            columns = await conn.execute(text("PRAGMA table_info(snapshot)"))
+            names = {row[1] for row in columns.all()}
+            version = (
+                await conn.execute(
+                    text("SELECT version_num FROM pravda_alembic_version")
+                )
+            ).scalar()
+
+        assert names == set(EXPECTED_COLUMNS)
+        assert version is not None
+
+        sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
+        early = SnapshotRecord(
+            url="https://example.com",
+            captured_at=datetime(2024, 1, 1),
+        )
+        late = SnapshotRecord(
+            url="https://example.com",
+            captured_at=datetime(2024, 1, 2),
+            http_archive={"log": {"entries": []}},
+        )
+        defaulted = SnapshotRecord(url="https://example.com")
+        async with sessionmaker() as session:
+            session.add_all([early, late, defaulted])
+            await session.commit()
+            assert isinstance(defaulted.id, uuid.UUID)
+
+        async with sessionmaker() as session:
+            result = await session.execute(
+                select(SnapshotRecord).order_by(SnapshotRecord.captured_at.desc())
+            )
+            rows = result.scalars().all()
+
+        assert [row.id for row in rows] == [defaulted.id, late.id, early.id]
+        assert rows[0].captured_at.tzinfo is None
+        assert rows[1].captured_at == late.captured_at
+        assert rows[1].http_archive == {"log": {"entries": []}}
+    finally:
+        await engine.dispose()
 
 
 @pytest.mark.asyncio

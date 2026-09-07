@@ -29,7 +29,7 @@ def upgrade() -> None:
         sa.Column(
             "captured_at",
             sa.DateTime(timezone=True),
-            server_default=sa.text("now()"),
+            server_default=sa.func.now(),
             nullable=False,
         ),
         sa.Column("http_status", sa.Integer(), nullable=True),
@@ -38,7 +38,11 @@ def upgrade() -> None:
         sa.Column("rendered_html", sa.Text(), nullable=True),
         sa.Column("screenshot", sa.Text(), nullable=True),
         sa.Column(
-            "http_archive", postgresql.JSONB(astext_type=sa.Text()), nullable=True
+            "http_archive",
+            sa.JSON().with_variant(
+                postgresql.JSONB(astext_type=sa.Text()), "postgresql"
+            ),
+            nullable=True,
         ),
         sa.PrimaryKeyConstraint("id"),
     )
