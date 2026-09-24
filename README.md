@@ -45,6 +45,7 @@ config = PravdaConfig(
     storage_base_path="./data",
 )
 
+
 async def capture_example():
     pravda = Pravda(config, sessionmaker)
     snapshot = await pravda.snapshot("https://example.com")
@@ -86,6 +87,7 @@ async def drive(page, url):
     await page.goto(url, wait_until="commit")
     await page.wait_for_selector(".results")
 
+
 async def capture_results():
     pravda = Pravda(config, sessionmaker)
     snapshot = await pravda.snapshot("https://example.com", drive=drive)
@@ -123,6 +125,7 @@ head from application startup — the database URL is passed explicitly and **no
 
 ```python
 import pravda
+
 
 async def setup():
     await pravda.migrate("postgresql+psycopg://user:pass@host/db")
