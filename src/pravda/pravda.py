@@ -1,7 +1,6 @@
 """Configured browser capture and snapshot history."""
 
 import asyncio
-import json
 import logging
 import shutil
 import tempfile
@@ -28,8 +27,6 @@ from pravda.storage import Storage
 
 logger = logging.getLogger(__name__)
 
-BROWSER_CHANNEL = "chrome"
-
 # Capture and finalization form one atomic evidence operation. A context-close
 # failure invalidates the result; cleanup is best-effort. Storage, persistence,
 # non-Playwright callback failures, and cancellation propagate.
@@ -50,15 +47,6 @@ class PravdaConfig:
     storage_base_path: str
 
 
-def _launch_options_header() -> dict[str, str]:
-    """Encode the Chrome launch options for the WebSocket server header."""
-    return {
-        "x-playwright-launch-options": json.dumps(
-            {"channel": BROWSER_CHANNEL, "headless": False}
-        ),
-    }
-
-
 class _CaptureFailure(Exception):
     """A browser failure that should be persisted without evidence."""
 
@@ -70,7 +58,6 @@ async def _connect(playwright, browser_ws_url: str) -> Browser:
         # connect's timeout defaults to 0 (no timeout). Bound the handshake so
         # a dead server fails fast as a PlaywrightError instead of hanging.
         timeout=CONNECT_TIMEOUT_MS,
-        headers=_launch_options_header(),
     )
 
 

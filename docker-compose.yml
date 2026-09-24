@@ -1,18 +1,4 @@
 services:
-  playwright:
-    build: .
-    init: true
-    ports:
-      - "3000:3000"
-    # Playwright's server exposes an HTTP /json listing of its browser
-    # endpoints; it answers only once the WebSocket server is accepting
-    # connections, so this doubles as a readiness gate for clients.
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:3000/json"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
   postgres:
     image: postgres:18
     environment:

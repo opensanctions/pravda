@@ -1,4 +1,6 @@
-"""Shared pytest fixtures for the Compose browser and test database."""
+"""Shared pytest fixtures for the test browser and database."""
+
+import os
 
 import pytest
 from playwright.async_api import async_playwright
@@ -10,7 +12,7 @@ from pravda.db import Base, SnapshotRecord
 from pravda.storage import Storage
 
 DATABASE_URL = "postgresql+psycopg://pravda:pravda@localhost:5432/pravda"
-BROWSER_WS_URL = "ws://localhost:3000"
+BROWSER_WS_URL = os.environ.get("PRAVDA_TEST_BROWSER_WS_URL", "ws://localhost:3000")
 
 
 @pytest.fixture()

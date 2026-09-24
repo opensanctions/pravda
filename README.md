@@ -146,16 +146,8 @@ Applications own the external infrastructure Pravda talks to; Pravda does not
 launch or manage it:
 
 - **Browser** — a remote Playwright Chromium server exposed over WebSocket.
-  Release images are published to GitHub Container Registry as
-  `ghcr.io/opensanctions/pravda-browser:<version>` (and `latest` for the newest
-  non-prerelease). The image runs headed Chrome under xvfb and accepts launch
-  options through the `x-playwright-launch-options` WebSocket header. Run it
-  locally with:
-
-  ```bash
-  docker run --rm --init -p 3000:3000 \
-    ghcr.io/opensanctions/pravda-browser:latest
-  ```
+  Applications provide their own, such as the Playwright Docker image running
+  headed Chrome under xvfb, or a hosted browser service.
 - **Database** — a PostgreSQL or SQLite database the application provisions
   and [migrates](#database-migrations).
 - **Storage** — an fsspec backend the application points at via
@@ -166,7 +158,7 @@ launch or manage it:
 Requires [uv](https://docs.astral.sh/uv/) and Docker.
 
 ```bash
-# Start the remote browser and Postgres
+# Start Postgres (tests connect to a remote Playwright browser endpoint)
 docker compose up -d
 
 # Install dependencies

@@ -12,8 +12,7 @@ Pravda is an async Python library for capturing durable web evidence with a remo
 
 - The project uses uv's `src` layout; package source lives in `src/pravda`.
 - Use Python 3.12+ and async APIs only; do not add sync wrappers.
-- The Playwright package is a client. Browsers run only in the Docker container as headed Chrome under xvfb.
-- Browser launch options are sent through the `x-playwright-launch-options` WebSocket header; do not add custom server JavaScript.
+- The Playwright package is a client. Pravda connects to an externally provisioned browser over WebSocket and never launches one; the endpoint owns its launch configuration.
 - Postgres access is async SQLAlchemy. Alembic owns the schema; library code must not create it.
 - Store artifacts through fsspec using content-addressed filenames.
 - Runtime configuration is explicit and instance-scoped. Applications construct `PravdaConfig(database_url, browser_ws_url, storage_base_path)` and pass it to a long-lived `Pravda` instance, which owns its engine, session factory, and storage.
@@ -34,7 +33,7 @@ The public API is exported from `pravda`: the configured `Pravda` instance, the 
 
 ## Downloads
 
-Chrome is configured with `AlwaysOpenPdfExternally`, so PDFs and similar viewer-handled responses become downloads. Capture code must continue recovering download bytes and associating them with the matching HAR entry as `content._file`; do not introduce a separate PDF artifact model.
+When the browser endpoint sends viewer-handled responses such as PDFs as downloads (`AlwaysOpenPdfExternally`), capture code must recover the download bytes and associate them with the matching HAR entry as `content._file`; do not introduce a separate PDF artifact model.
 
 ## Database migrations
 
@@ -53,7 +52,7 @@ When a migration creates a `postgresql.ENUM`, manage the type explicitly in both
 
 ## Testing
 
-- Run against the Compose browser and test Postgres; do not use the public internet.
+- Run against the configured browser endpoint and the test Postgres; do not use the public internet.
 - Use Playwright `page.route()` and files in `tests/fixtures/` for web content.
 - Use the real test database and configured client fixtures in `tests/conftest.py`.
 - Mock boundaries only, such as temporary storage and browser routing; do not mock Pravda internals.
