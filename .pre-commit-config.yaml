@@ -15,7 +15,7 @@ repos:
         pass_filenames: false
       - id: pytest
         name: tests
-        entry: uv run pytest
+        entry: uv run --env-file .env pytest
         language: system
         types: [python]
         pass_filenames: false

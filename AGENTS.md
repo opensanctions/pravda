@@ -40,10 +40,8 @@ When the browser endpoint sends viewer-handled responses such as PDFs as downloa
 The scripts live inside the package at `src/pravda/migrations`; the repository-root `alembic.ini` points the developer command at them. After changing `src/pravda/db.py`, generate and review a migration:
 
 ```bash
-DATABASE_URL=postgresql+psycopg://pravda:pravda@localhost:5432/pravda \
-  uv run alembic upgrade head
-DATABASE_URL=postgresql+psycopg://pravda:pravda@localhost:5432/pravda \
-  uv run alembic revision --autogenerate -m "describe the change"
+uv run --env-file .env alembic upgrade head
+uv run --env-file .env alembic revision --autogenerate -m "describe the change"
 ```
 
 The public `pravda.migrate(database_url)` API runs the same packaged revisions against an explicit URL (no `DATABASE_URL` required). Tests run against an in-memory SQLite database: migration tests hold the database open while `migrate()` opens its own engine, and other tests use `Base.metadata.create_all` rather than Alembic migrations.
@@ -62,7 +60,7 @@ When a migration creates a `postgresql.ENUM`, manage the type explicitly in both
 ## Validation
 
 ```bash
-uv run pytest
+uv run --env-file .env pytest
 uv run ruff check .
 uv run ruff format --check .
 ```

@@ -164,30 +164,30 @@ launch or manage it:
 
 Requires [uv](https://docs.astral.sh/uv/) and a remote Playwright browser
 endpoint. Tests run against an in-memory SQLite database, so no database
-service is needed.
+service is needed. Environment variables live in `.env`; `uv` does not read
+it automatically:
 
 ```bash
 # Install dependencies
 uv sync
 
-# Validate (set PRAVDA_TEST_BROWSER_WS_URL if the browser is not on :3000)
-uv run pytest
+# Local environment (once)
+cp .env.example .env
+
+# Validate
+uv run --env-file .env pytest
 uv run ruff check .
 uv run ruff format --check .
 ```
 
-`docker compose up -d` starts a local PostgreSQL for developing migrations
-against the Postgres dialect.
-
 The migration scripts live inside the package at `pravda/migrations`. After
 changing models in `pravda/db.py`, the developer `alembic` command reads
-`DATABASE_URL` and points at the packaged scripts via `alembic.ini`:
+`DATABASE_URL` from `.env` and points at the packaged scripts via
+`alembic.ini`:
 
 ```bash
-DATABASE_URL=postgresql+psycopg://pravda:pravda@localhost:5432/pravda \
-  uv run alembic upgrade head
-DATABASE_URL=postgresql+psycopg://pravda:pravda@localhost:5432/pravda \
-  uv run alembic revision --autogenerate -m "describe the change"
+uv run --env-file .env alembic upgrade head
+uv run --env-file .env alembic revision --autogenerate -m "describe the change"
 ```
 
 ## License

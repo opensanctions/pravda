@@ -12,14 +12,12 @@ from pravda import Pravda, PravdaConfig
 from pravda.db import Base
 from pravda.storage import Storage
 
-BROWSER_WS_URL = os.environ.get("PRAVDA_TEST_BROWSER_WS_URL", "ws://localhost:3000")
-
 
 @pytest.fixture()
 def pravda_config(tmp_path) -> PravdaConfig:
     """Configuration for a client with an isolated artifact store."""
     return PravdaConfig(
-        browser_ws_url=BROWSER_WS_URL,
+        browser_ws_url=os.environ["PRAVDA_TEST_BROWSER_WS_URL"],
         storage_base_path=str(tmp_path),
     )
 
@@ -56,7 +54,9 @@ def storage(tmp_path):
 @pytest.fixture(scope="session")
 async def browser():
     playwright = await async_playwright().start()
-    browser = await playwright.chromium.connect(BROWSER_WS_URL)
+    browser = await playwright.chromium.connect(
+        os.environ["PRAVDA_TEST_BROWSER_WS_URL"]
+    )
     yield browser
     await browser.close()
     await playwright.stop()

@@ -5,6 +5,7 @@ __pycache__
 data/
 CLAUDE.md
 *.log
+*.db
 
 # Build artifacts
 dist/
