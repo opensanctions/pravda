@@ -10,7 +10,7 @@ Pravda is a **library, not a service**: it connects directly from the caller's
 process to the browser, database, and storage backend. Applications own that
 infrastructure (see [Infrastructure](#infrastructure)).
 
-- **Python** 3.13+
+- **Python** 3.12+
 - **Browser**: a remote Playwright Chromium WebSocket endpoint (headed Chrome
   under xvfb). The browser is a client connection; Pravda does not launch one.
 - **Database**: PostgreSQL or SQLite, upgraded to Pravda's schema with the

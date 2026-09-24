@@ -11,7 +11,7 @@ Pravda is an async Python library for capturing durable web evidence with a remo
 ## Architecture
 
 - The project uses uv's `src` layout; package source lives in `src/pravda`.
-- Use Python 3.13+ and async APIs only; do not add sync wrappers.
+- Use Python 3.12+ and async APIs only; do not add sync wrappers.
 - The Playwright package is a client. Browsers run only in the Docker container as headed Chrome under xvfb.
 - Browser launch options are sent through the `x-playwright-launch-options` WebSocket header; do not add custom server JavaScript.
 - Postgres access is async SQLAlchemy. Alembic owns the schema; library code must not create it.

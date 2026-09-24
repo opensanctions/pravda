@@ -7,7 +7,7 @@ name = "opensanctions-pravda"
 version = "0.1.7"
 description = "Durable web evidence capture with a remote browser, Postgres, and content-addressed storage"
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.12"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "OpenSanctions" }]
@@ -24,6 +24,7 @@ classifiers = [
     "Intended Audience :: Developers",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
     "Topic :: Internet :: WWW/HTTP :: Browsers",
@@ -49,7 +50,7 @@ Issues = "https://github.com/opensanctions/pravda/issues"
 module-name = "pravda"
 
 [tool.ruff]
-target-version = "py313"
+target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "W"]
