@@ -26,36 +26,42 @@ pip install opensanctions-pravda
 
 ## Quick start
 
-Construct a [`PravdaConfig`](#configuration), build a long-lived `Pravda`, and
-use it as an async context manager so its database engine is disposed on
-teardown. Reuse a single instance across captures — it owns the pooled engine,
-session factory, and storage backend, while each capture opens its own browser
-connection.
+The application owns the SQLAlchemy engine and an `async_sessionmaker`
+configured with `expire_on_commit=False`; construct a
+[`PravdaConfig`](#configuration) for the remaining settings and build a
+long-lived `Pravda`. Reuse a single instance across captures — each capture
+opens its own browser connection and database session — and dispose the engine
+on shutdown.
 
 ```python
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
 from pravda import Pravda, PravdaConfig
 
+engine = create_async_engine("postgresql+psycopg://pravda:pravda@localhost:5432/pravda")
+sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
 config = PravdaConfig(
-    database_url="postgresql+psycopg://pravda:pravda@localhost:5432/pravda",
     browser_ws_url="ws://localhost:3000",
     storage_base_path="./data",
 )
 
 async def capture_example():
-    async with Pravda(config) as pravda:
-        snapshot = await pravda.snapshot("https://example.com")
-        print(snapshot.id, snapshot.http_status, snapshot.rendered_html)
+    pravda = Pravda(config, sessionmaker)
+    snapshot = await pravda.snapshot("https://example.com")
+    print(snapshot.id, snapshot.http_status, snapshot.rendered_html)
 ```
 
 ## Configuration
 
-`PravdaConfig` takes three settings, supplied explicitly per instance:
+`PravdaConfig` takes two settings, supplied explicitly per instance, plus an
+application-owned `async_sessionmaker` passed to `Pravda`:
 
-- `database_url` — async SQLAlchemy URL, such as
-  `postgresql+psycopg://user:pass@host/db` or `sqlite+aiosqlite:///path/to.db`.
 - `browser_ws_url` — remote Playwright WebSocket URL.
 - `storage_base_path` — fsspec storage URL, such as `./data`, `s3://bucket`,
   or `gs://bucket`.
+
+The session factory must use `expire_on_commit=False`, because Pravda reads
+persisted snapshots after commit.
 
 ## Usage
 
@@ -67,8 +73,8 @@ share one wall-clock deadline; persistence is bounded separately:
 
 ```python
 async def capture_example():
-    async with Pravda(config) as pravda:
-        snapshot = await pravda.snapshot("https://example.com")
+    pravda = Pravda(config, sessionmaker)
+    snapshot = await pravda.snapshot("https://example.com")
 ```
 
 For custom navigation or interaction, pass an async `drive(page, url)`
@@ -81,8 +87,8 @@ async def drive(page, url):
     await page.wait_for_selector(".results")
 
 async def capture_results():
-    async with Pravda(config) as pravda:
-        snapshot = await pravda.snapshot("https://example.com", drive=drive)
+    pravda = Pravda(config, sessionmaker)
+    snapshot = await pravda.snapshot("https://example.com", drive=drive)
 ```
 
 `page` is a real `playwright.async_api.Page`, so selectors, clicks, form
@@ -102,10 +108,10 @@ The configured instance returns all snapshots for an exact URL, newest first:
 
 ```python
 async def print_history():
-    async with Pravda(config) as pravda:
-        history = await pravda.snapshots("https://example.com")
-        for snapshot in history:
-            print(snapshot.captured_at, snapshot.http_status)
+    pravda = Pravda(config, sessionmaker)
+    history = await pravda.snapshots("https://example.com")
+    for snapshot in history:
+        print(snapshot.captured_at, snapshot.http_status)
 ```
 
 ## Database migrations
@@ -148,27 +154,30 @@ launch or manage it:
 - **Browser** — a remote Playwright Chromium server exposed over WebSocket.
   Applications provide their own, such as the Playwright Docker image running
   headed Chrome under xvfb, or a hosted browser service.
-- **Database** — a PostgreSQL or SQLite database the application provisions
-  and [migrates](#database-migrations).
+- **Database** — a PostgreSQL or SQLite database the application provisions,
+  opens an async engine for, and [migrates](#database-migrations). The
+  application owns the engine and session factory.
 - **Storage** — an fsspec backend the application points at via
   `storage_base_path`.
 
 ## Development
 
-Requires [uv](https://docs.astral.sh/uv/) and Docker.
+Requires [uv](https://docs.astral.sh/uv/) and a remote Playwright browser
+endpoint. Tests run against an in-memory SQLite database, so no database
+service is needed.
 
 ```bash
-# Start Postgres (tests connect to a remote Playwright browser endpoint)
-docker compose up -d
-
 # Install dependencies
 uv sync
 
-# Validate
+# Validate (set PRAVDA_TEST_BROWSER_WS_URL if the browser is not on :3000)
 uv run pytest
 uv run ruff check .
 uv run ruff format --check .
 ```
+
+`docker compose up -d` starts a local PostgreSQL for developing migrations
+against the Postgres dialect.
 
 The migration scripts live inside the package at `pravda/migrations`. After
 changing models in `pravda/db.py`, the developer `alembic` command reads

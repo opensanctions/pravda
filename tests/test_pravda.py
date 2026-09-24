@@ -1,4 +1,4 @@
-"""End-to-end tests for ``Pravda.snapshot`` against the browser and test database."""
+"""End-to-end tests for ``Pravda.snapshot`` against browser and in-memory DB."""
 
 from pathlib import Path
 

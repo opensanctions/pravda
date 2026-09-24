@@ -10,7 +10,7 @@ from pathlib import Path
 from playwright.async_api import Browser, BrowserContext, async_playwright
 from playwright.async_api import Error as PlaywrightError
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from pravda.capture import (
     CaptureResult,
@@ -42,7 +42,6 @@ PERSIST_TIMEOUT_S = 15
 class PravdaConfig:
     """Runtime configuration for a :class:`Pravda` instance."""
 
-    database_url: str
     browser_ws_url: str
     storage_base_path: str
 
@@ -223,26 +222,20 @@ async def _capture(
 class Pravda:
     """Configured async entry point for capture and snapshot history.
 
-    Use as an async context manager. Each concurrent capture owns its browser
-    connection, recording context, temporary directory, and database session.
+    The application owns the database engine and its ``async_sessionmaker``,
+    which must be configured with ``expire_on_commit=False``. Each concurrent
+    capture owns its browser connection, recording context, temporary
+    directory, and database session.
     """
 
-    def __init__(self, config: PravdaConfig) -> None:
-        self._config = config
-        self._engine = create_async_engine(config.database_url)
-        self._sessionmaker = async_sessionmaker(self._engine, expire_on_commit=False)
+    def __init__(
+        self,
+        config: PravdaConfig,
+        sessionmaker: async_sessionmaker[AsyncSession],
+    ) -> None:
+        self._sessionmaker = sessionmaker
         self._storage = Storage.from_url(config.storage_base_path)
         self._browser_ws_url = config.browser_ws_url
-
-    async def __aenter__(self) -> "Pravda":
-        return self
-
-    async def __aexit__(self, *exc_info: object) -> None:
-        await self.aclose()
-
-    async def aclose(self) -> None:
-        """Dispose the owned database engine."""
-        await self._engine.dispose()
 
     async def snapshot(
         self, url: str, *, drive: DriveCallback | None = None

@@ -1,6 +1,6 @@
 # Pravda
 
-Pravda is an async Python library for capturing durable web evidence with a remote browser, Postgres, and content-addressed blob storage.
+Pravda is an async Python library for capturing durable web evidence with a remote browser, a SQL database, and content-addressed blob storage.
 
 ## Principles
 
@@ -13,21 +13,21 @@ Pravda is an async Python library for capturing durable web evidence with a remo
 - The project uses uv's `src` layout; package source lives in `src/pravda`.
 - Use Python 3.12+ and async APIs only; do not add sync wrappers.
 - The Playwright package is a client. Pravda connects to an externally provisioned browser over WebSocket and never launches one; the endpoint owns its launch configuration.
-- Postgres access is async SQLAlchemy. Alembic owns the schema; library code must not create it.
+- Database access is async SQLAlchemy (PostgreSQL or SQLite). Alembic owns the schema; library code must not create it.
 - Store artifacts through fsspec using content-addressed filenames.
-- Runtime configuration is explicit and instance-scoped. Applications construct `PravdaConfig(database_url, browser_ws_url, storage_base_path)` and pass it to a long-lived `Pravda` instance, which owns its engine, session factory, and storage.
+- Runtime configuration is explicit and instance-scoped. Applications construct `PravdaConfig(browser_ws_url, storage_base_path)`, own their SQLAlchemy `AsyncEngine` and an `async_sessionmaker` configured with `expire_on_commit=False`, and pass both to a long-lived `Pravda` instance. The application disposes the engine.
 - The Alembic migration scripts live inside the package at `src/pravda/migrations` so they ship with installed distributions. The public `pravda.migrate(database_url)` API upgrades a caller-supplied database URL to head without touching the environment; the developer `alembic` command still reads `DATABASE_URL` from its command environment.
 - Add dependencies with `uv add`; do not edit `pyproject.toml` manually.
 
 ## Public behavior
 
-The public API is exported from `pravda`: the configured `Pravda` instance, the `PravdaConfig` it takes, and the frozen `Snapshot` value. `Pravda` is used as an async context manager and exposes async `snapshot()` and `snapshots()` methods.
+The public API is exported from `pravda`: the configured `Pravda` instance, the `PravdaConfig` it takes, and the frozen `Snapshot` value. `Pravda` is a long-lived object that exposes async `snapshot()` and `snapshots()` methods.
 
 - Without `drive`, `snapshot()` owns navigation and the complete capture pipeline.
 - The complete pipeline must remain bounded by a wall-clock timeout.
 - With `drive(page, url)`, the callback owns initial navigation and interaction; Pravda still owns capture, persistence, and cleanup.
 - Browser, navigation, and Playwright callback failures are persisted as failed snapshots. Non-Playwright callback exceptions propagate and persist nothing.
-- `Pravda` owns its database sessions and commits capture attempts. Callers require no database wiring.
+- `Pravda` commits each capture attempt through the application-owned session factory.
 - `snapshots(url)` returns all exact-URL matches newest first, without pagination.
 - Concurrent `snapshot()` calls are safe: each opens its own browser connection, recording context, temporary directory, and database session.
 
@@ -46,15 +46,15 @@ DATABASE_URL=postgresql+psycopg://pravda:pravda@localhost:5432/pravda \
   uv run alembic revision --autogenerate -m "describe the change"
 ```
 
-The public `pravda.migrate(database_url)` API runs the same packaged revisions against an explicit URL (no `DATABASE_URL` required); tests for that API drop and re-create the schema through their own fixture. Other tests use `Base.metadata.create_all` rather than Alembic migrations.
+The public `pravda.migrate(database_url)` API runs the same packaged revisions against an explicit URL (no `DATABASE_URL` required). Tests run against an in-memory SQLite database: migration tests hold the database open while `migrate()` opens its own engine, and other tests use `Base.metadata.create_all` rather than Alembic migrations.
 
 When a migration creates a `postgresql.ENUM`, manage the type explicitly in both `upgrade` and `downgrade`.
 
 ## Testing
 
-- Run against the configured browser endpoint and the test Postgres; do not use the public internet.
+- Run against the configured browser endpoint; do not use the public internet.
 - Use Playwright `page.route()` and files in `tests/fixtures/` for web content.
-- Use the real test database and configured client fixtures in `tests/conftest.py`.
+- Use the in-memory SQLite database and configured client fixtures in `tests/conftest.py`.
 - Mock boundaries only, such as temporary storage and browser routing; do not mock Pravda internals.
 - Test public behavior rather than implementation details.
 - Keep the test suite small and meaningful.

@@ -16,7 +16,7 @@ from pravda.storage import Storage
 
 
 async def _commit_snapshot(
-    database,
+    sessionmaker,
     url: str,
     captured_at: datetime,
     *,
@@ -27,7 +27,7 @@ async def _commit_snapshot(
     screenshot: str | None = None,
     http_archive: dict | None = None,
 ) -> uuid.UUID:
-    """Insert and commit a snapshot through the test database fixture."""
+    """Insert and commit a snapshot through the test sessionmaker fixture."""
     record = SnapshotRecord(
         id=uuid.uuid4(),
         url=url,
@@ -39,7 +39,7 @@ async def _commit_snapshot(
         screenshot=screenshot,
         http_archive=http_archive,
     )
-    async with database() as session:
+    async with sessionmaker() as session:
         session.add(record)
         await session.commit()
     return record.id
@@ -47,18 +47,18 @@ async def _commit_snapshot(
 
 @pytest.mark.asyncio
 async def test_snapshots_returns_exact_url_matches_newest_first(
-    pravda: Pravda, database
+    pravda: Pravda, sessionmaker
 ):
     url = "https://example.com"
     older = await _commit_snapshot(
-        database, url, datetime(2026, 1, 1, tzinfo=timezone.utc)
+        sessionmaker, url, datetime(2026, 1, 1, tzinfo=timezone.utc)
     )
     newer = await _commit_snapshot(
-        database, url, datetime(2026, 1, 2, tzinfo=timezone.utc)
+        sessionmaker, url, datetime(2026, 1, 2, tzinfo=timezone.utc)
     )
     # A different URL must not appear in the results.
     await _commit_snapshot(
-        database,
+        sessionmaker,
         "https://different.example",
         datetime(2026, 1, 3, tzinfo=timezone.utc),
     )
@@ -70,11 +70,11 @@ async def test_snapshots_returns_exact_url_matches_newest_first(
 
 @pytest.mark.asyncio
 async def test_snapshots_returns_public_dataclass_with_resolved_paths(
-    pravda: Pravda, database, tmp_path
+    pravda: Pravda, sessionmaker, tmp_path
 ):
     url = "https://example.com"
     await _commit_snapshot(
-        database,
+        sessionmaker,
         url,
         datetime(2026, 1, 1, tzinfo=timezone.utc),
         final_url="https://example.com/page",
@@ -94,12 +94,12 @@ async def test_snapshots_returns_public_dataclass_with_resolved_paths(
 
 @pytest.mark.asyncio
 async def test_snapshot_artifacts_are_none_when_navigation_never_committed(
-    pravda: Pravda, database
+    pravda: Pravda, sessionmaker
 ):
     url = "https://example.com"
     # No final_url: navigation never committed, no artifacts stored.
     await _commit_snapshot(
-        database,
+        sessionmaker,
         url,
         datetime(2026, 1, 1, tzinfo=timezone.utc),
         final_url=None,
@@ -118,7 +118,7 @@ async def test_snapshot_artifacts_are_none_when_navigation_never_committed(
 
 @pytest.mark.asyncio
 async def test_from_record_resolves_paths_without_mutating_persisted_record(
-    database, tmp_path
+    sessionmaker, tmp_path
 ):
     """The public mapping resolves artifact paths but keeps the record relative."""
     http_archive = {
@@ -139,7 +139,7 @@ async def test_from_record_resolves_paths_without_mutating_persisted_record(
         }
     }
     await _commit_snapshot(
-        database,
+        sessionmaker,
         "https://example.com",
         datetime(2026, 1, 1, tzinfo=timezone.utc),
         final_url="https://example.com/page",
@@ -150,7 +150,7 @@ async def test_from_record_resolves_paths_without_mutating_persisted_record(
     )
 
     storage = Storage.from_url(str(tmp_path))
-    async with database() as session:
+    async with sessionmaker() as session:
         record = (
             await session.execute(
                 select(SnapshotRecord).where(
@@ -180,9 +180,9 @@ async def test_from_record_resolves_paths_without_mutating_persisted_record(
 
 
 @pytest.mark.asyncio
-async def test_snapshot_is_immutable(pravda: Pravda, database):
+async def test_snapshot_is_immutable(pravda: Pravda, sessionmaker):
     url = "https://example.com"
-    await _commit_snapshot(database, url, datetime(2026, 1, 1, tzinfo=timezone.utc))
+    await _commit_snapshot(sessionmaker, url, datetime(2026, 1, 1, tzinfo=timezone.utc))
 
     result = (await pravda.snapshots(url))[0]
 

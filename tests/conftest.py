@@ -1,17 +1,17 @@
 """Shared pytest fixtures for the test browser and database."""
 
 import os
+import uuid
 
 import pytest
 from playwright.async_api import async_playwright
-from sqlalchemy import delete, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.pool import AsyncAdaptedQueuePool
 
 from pravda import Pravda, PravdaConfig
-from pravda.db import Base, SnapshotRecord
+from pravda.db import Base
 from pravda.storage import Storage
 
-DATABASE_URL = "postgresql+psycopg://pravda:pravda@localhost:5432/pravda"
 BROWSER_WS_URL = os.environ.get("PRAVDA_TEST_BROWSER_WS_URL", "ws://localhost:3000")
 
 
@@ -19,43 +19,32 @@ BROWSER_WS_URL = os.environ.get("PRAVDA_TEST_BROWSER_WS_URL", "ws://localhost:30
 def pravda_config(tmp_path) -> PravdaConfig:
     """Configuration for a client with an isolated artifact store."""
     return PravdaConfig(
-        database_url=DATABASE_URL,
         browser_ws_url=BROWSER_WS_URL,
         storage_base_path=str(tmp_path),
     )
 
 
-@pytest.fixture(scope="session")
-async def database_engine():
-    """Create the test schema and own its engine for the test session."""
-    engine = create_async_engine(DATABASE_URL)
+@pytest.fixture()
+async def sessionmaker():
+    """A fresh in-memory SQLite database shared by one test's connections.
+
+    A named shared-cache database gives each session its own connection and
+    transaction state, and is discarded when the test's engine is disposed.
+    """
+    url = (
+        f"sqlite+aiosqlite:///file:{uuid.uuid4().hex}?mode=memory&cache=shared&uri=true"
+    )
+    engine = create_async_engine(url, poolclass=AsyncAdaptedQueuePool)
     async with engine.begin() as connection:
-        await connection.execute(text("DROP SCHEMA public CASCADE"))
-        await connection.execute(text("CREATE SCHEMA public"))
         await connection.run_sync(Base.metadata.create_all)
-    yield engine
-    async with engine.begin() as connection:
-        await connection.execute(text("DROP SCHEMA public CASCADE"))
-        await connection.execute(text("CREATE SCHEMA public"))
+    yield async_sessionmaker(engine, expire_on_commit=False)
     await engine.dispose()
 
 
 @pytest.fixture()
-async def database(database_engine):
-    """Provide database access and clear committed snapshots around each test."""
-    sessionmaker = async_sessionmaker(database_engine, expire_on_commit=False)
-    async with sessionmaker.begin() as session:
-        await session.execute(delete(SnapshotRecord))
-    yield sessionmaker
-    async with sessionmaker.begin() as session:
-        await session.execute(delete(SnapshotRecord))
-
-
-@pytest.fixture()
-async def pravda(database, pravda_config: PravdaConfig):
-    """A configured client with per-test database and storage isolation."""
-    async with Pravda(pravda_config) as instance:
-        yield instance
+async def pravda(sessionmaker, pravda_config: PravdaConfig):
+    """A configured client sharing the test's in-memory database."""
+    return Pravda(pravda_config, sessionmaker)
 
 
 @pytest.fixture()
