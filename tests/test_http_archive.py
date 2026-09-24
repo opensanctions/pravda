@@ -11,6 +11,7 @@ import pravda.http_archive as har_module
 from pravda.capture import DownloadedBody
 from pravda.http_archive import capture_http_archive
 from pravda.storage import Storage
+from tests.helpers import slow_pipe_file
 
 PAGE_URL = "https://example.com/doc.pdf"
 
@@ -97,9 +98,6 @@ async def test_download_body_storage_timeout_propagates(storage: Storage, monkey
         archive.writestr("har.har", json.dumps(manifest))
 
     monkeypatch.setattr(har_module, "STORAGE_WRITE_TIMEOUT_S", 0.01)
-
-    async def slow_pipe_file(path, value, **kwargs):
-        await asyncio.sleep(1)
 
     monkeypatch.setattr(storage.fs, "_pipe_file", slow_pipe_file)
 

@@ -2,7 +2,6 @@
 
 import asyncio
 import time
-from pathlib import Path
 
 import pytest
 from playwright.async_api import Browser, BrowserContext
@@ -11,19 +10,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 import pravda.capture as capture_module
 import pravda.pravda as pravda_module
 from pravda import Pravda
-
-FIXTURES = Path(__file__).parent / "fixtures"
-
-
-def _fulfill_html(route):
-    return route.fulfill(
-        body=(FIXTURES / "example.html").read_text(),
-        headers={"content-type": "text/html"},
-    )
+from tests.helpers import fulfill_html, slow_pipe_file
 
 
 async def _drive_example(page, url):
-    await page.route(url, _fulfill_html)
+    await page.route(url, fulfill_html)
     await page.goto(url, wait_until="load")
 
 
@@ -88,9 +79,6 @@ async def test_storage_timeout_is_not_mistaken_for_snapshot_timeout(
     pravda: Pravda, monkeypatch
 ):
     monkeypatch.setattr(capture_module, "STORAGE_WRITE_TIMEOUT_S", 0.01)
-
-    async def slow_pipe_file(path, value, **kwargs):
-        await asyncio.sleep(1)
 
     monkeypatch.setattr(pravda._storage.fs, "_pipe_file", slow_pipe_file)
 

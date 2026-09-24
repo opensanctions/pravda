@@ -1,7 +1,6 @@
 """Atomic failure semantics for HAR finalization."""
 
 import asyncio
-from pathlib import Path
 
 import pytest
 from playwright.async_api import Error as PlaywrightError
@@ -10,15 +9,7 @@ import pravda.pravda as pravda_module
 from pravda import Pravda
 from pravda.capture import capture_page
 from pravda.storage import Storage
-
-FIXTURES = Path(__file__).parent / "fixtures"
-
-
-def _fulfill_html(route):
-    return route.fulfill(
-        body=(FIXTURES / "example.html").read_text(),
-        headers={"content-type": "text/html"},
-    )
+from tests.helpers import fulfill_html, slow_pipe_file
 
 
 async def _record_example(browser, storage: Storage, tmp_path):
@@ -28,7 +19,7 @@ async def _record_example(browser, storage: Storage, tmp_path):
         record_har_content="attach",
     )
     page = await context.new_page()
-    await page.route("https://example.com", _fulfill_html)
+    await page.route("https://example.com", fulfill_html)
     result = await capture_page(page, "https://example.com", storage)
     return context, result, http_archive_path
 
@@ -57,9 +48,6 @@ async def test_har_processing_timeout_propagates(
     context, captured, path = await _record_example(browser, storage, tmp_path)
     monkeypatch.setattr(pravda_module, "HAR_PROCESSING_TIMEOUT_S", 0.01)
 
-    async def slow_pipe_file(path, value, **kwargs):
-        await asyncio.sleep(1)
-
     monkeypatch.setattr(storage.fs, "_pipe_file", slow_pipe_file)
 
     with pytest.raises(asyncio.TimeoutError):
@@ -73,7 +61,7 @@ async def test_snapshot_har_storage_failure_propagates_without_persisting(
     """A storage failure during HAR processing propagates and persists nothing."""
 
     async def drive(page, url):
-        await page.route(url, _fulfill_html)
+        await page.route(url, fulfill_html)
         await page.goto(url, wait_until="load")
 
         async def fail_screenshot(**kwargs):

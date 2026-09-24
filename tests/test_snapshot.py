@@ -8,8 +8,7 @@ from playwright.async_api import TimeoutError as PlaywrightTimeout
 import pravda.capture as capture_module
 from pravda.capture import _save_download, capture_page
 from pravda.storage import Storage
-
-FIXTURES = Path(__file__).parent / "fixtures"
+from tests.helpers import FIXTURES, fulfill_html, fulfill_pdf, slow_pipe_file
 
 
 @pytest.fixture()
@@ -25,15 +24,7 @@ async def page(browser: Browser):
 @pytest.mark.asyncio
 async def test_capture_page_returns_evidence(page: Page, storage: Storage):
     """Capture a page using a routed fixture and inspect the evidence."""
-    fixture_html = (FIXTURES / "example.html").read_text()
-
-    await page.route(
-        "https://example.com",
-        lambda route: route.fulfill(
-            body=fixture_html,
-            headers={"content-type": "text/html"},
-        ),
-    )
+    await page.route("https://example.com", fulfill_html)
 
     result = await capture_page(page, "https://example.com", storage)
 
@@ -50,15 +41,7 @@ async def test_capture_page_returns_evidence(page: Page, storage: Storage):
 @pytest.mark.asyncio
 async def test_capture_page_downloads_pdf(page: Page, storage: Storage):
     """A URL serving application/pdf is captured as a downloaded body."""
-    fixture_pdf = (FIXTURES / "sample.pdf").read_bytes()
-
-    await page.route(
-        "https://example.com/doc.pdf",
-        lambda route: route.fulfill(
-            body=fixture_pdf,
-            headers={"content-type": "application/pdf"},
-        ),
-    )
+    await page.route("https://example.com/doc.pdf", fulfill_pdf)
 
     result = await capture_page(page, "https://example.com/doc.pdf", storage)
 
@@ -68,7 +51,7 @@ async def test_capture_page_downloads_pdf(page: Page, storage: Storage):
 
     assert result.download is not None
     assert result.download.url == "https://example.com/doc.pdf"
-    assert result.download.data == fixture_pdf
+    assert result.download.data == (FIXTURES / "sample.pdf").read_bytes()
     assert result.plaintext is None
     assert result.rendered_html is None
     assert result.screenshot is None
@@ -131,14 +114,7 @@ async def test_capture_page_dom_capture_timeout_skips_content(
 ):
     """A DOM read exceeding its budget drops html/plaintext but keeps the screenshot."""
     fixture_html = (FIXTURES / "example.html").read_text()
-
-    await page.route(
-        "https://example.com",
-        lambda route: route.fulfill(
-            body=fixture_html,
-            headers={"content-type": "text/html"},
-        ),
-    )
+    await page.route("https://example.com", fulfill_html)
 
     # Stall page.content past the DOM-capture budget.
     monkeypatch.setattr(capture_module, "DOM_CAPTURE_TIMEOUT_S", 0.2)
@@ -163,22 +139,10 @@ async def test_capture_page_storage_write_timeout_propagates(
     page: Page, storage: Storage, monkeypatch
 ):
     """An artifact write exceeding its budget propagates the timeout."""
-    fixture_html = (FIXTURES / "example.html").read_text()
-
-    await page.route(
-        "https://example.com",
-        lambda route: route.fulfill(
-            body=fixture_html,
-            headers={"content-type": "text/html"},
-        ),
-    )
+    await page.route("https://example.com", fulfill_html)
 
     # Stall the storage backend past the write budget.
     monkeypatch.setattr(capture_module, "STORAGE_WRITE_TIMEOUT_S", 0.01)
-
-    async def slow_pipe_file(path, value, **kwargs):
-        await asyncio.sleep(1)
-
     monkeypatch.setattr(storage.fs, "_pipe_file", slow_pipe_file)
 
     with pytest.raises(asyncio.TimeoutError):

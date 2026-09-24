@@ -6,23 +6,7 @@ import pytest
 from playwright.async_api import Error as PlaywrightError
 
 from pravda import Pravda
-
-FIXTURES = Path(__file__).parent / "fixtures"
-
-EXAMPLE_HTML = FIXTURES / "example.html"
-SAMPLE_PDF = FIXTURES / "sample.pdf"
-
-
-def _fulfill_html(route):
-    return route.fulfill(
-        body=EXAMPLE_HTML.read_text(), headers={"content-type": "text/html"}
-    )
-
-
-def _fulfill_pdf(route):
-    return route.fulfill(
-        body=SAMPLE_PDF.read_bytes(), headers={"content-type": "application/pdf"}
-    )
+from tests.helpers import fulfill_html, fulfill_pdf
 
 
 @pytest.mark.asyncio
@@ -48,7 +32,7 @@ async def test_snapshot_drive_navigates_and_captures(pravda: Pravda):
     """A drive callback routes and navigates; Pravda captures and persists."""
 
     async def drive(page, url):
-        await page.route(url, _fulfill_html)
+        await page.route(url, fulfill_html)
         await page.goto(url, wait_until="load")
 
     snapshot = await pravda.snapshot("https://example.com", drive=drive)
@@ -115,7 +99,7 @@ async def test_snapshot_drive_download_uses_download_url_and_skips_blank_page(
     """A drive goto to a PDF records the download and skips the blank page artifacts."""
 
     async def drive(page, url):
-        await page.route(url, _fulfill_pdf)
+        await page.route(url, fulfill_pdf)
         # goto hands off to Chrome's downloader and raises; catch it.
         try:
             await page.goto(url, wait_until="commit")
@@ -206,7 +190,7 @@ async def test_snapshot_drive_arbitrary_error_propagates_and_persists_nothing(
     """A non-Playwright drive-callback exception propagates and persists nothing."""
 
     async def drive(page, url):
-        await page.route(url, _fulfill_html)
+        await page.route(url, fulfill_html)
         await page.goto(url, wait_until="load")
         raise ValueError("caller bug")
 
