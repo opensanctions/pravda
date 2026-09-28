@@ -31,12 +31,12 @@ def do_run_migrations(connection: Connection) -> None:
 
 async def run_async_migrations() -> None:
     database_url = config.get_main_option("sqlalchemy.url") or os.environ.get(
-        "DATABASE_URL"
+        "PRAVDA_DATABASE_URI"
     )
     if not database_url:
         raise RuntimeError(
-            "No database URL configured: pass one to pravda.migrate() or set "
-            "DATABASE_URL for the alembic command."
+            "No database URL configured: set sqlalchemy.url in the Alembic "
+            "configuration or PRAVDA_DATABASE_URI in the environment."
         )
     connectable = create_async_engine(database_url, poolclass=pool.NullPool)
     try:

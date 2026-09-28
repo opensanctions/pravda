@@ -16,7 +16,7 @@ Pravda is an async Python library for capturing durable web evidence with a remo
 - Database access is async SQLAlchemy (PostgreSQL or SQLite). Alembic owns the schema; library code must not create it.
 - Store artifacts through fsspec using content-addressed filenames.
 - Runtime configuration is explicit and instance-scoped. Applications construct `PravdaConfig(browser_ws_url, storage_base_path)`, own their SQLAlchemy `AsyncEngine` and an `async_sessionmaker` configured with `expire_on_commit=False`, and pass both to a long-lived `Pravda` instance. The application disposes the engine.
-- The Alembic migration scripts live inside the package at `src/pravda/migrations` so they ship with installed distributions; there is no migration API. Consumers run the packaged revisions through their own Alembic configuration using the package-resource location `pravda:migrations`; the Alembic environment bridges to the async driver internally. The developer `alembic` command reads `DATABASE_URL` from its command environment.
+- The Alembic migration scripts live inside the package at `src/pravda/migrations` so they ship with installed distributions; there is no migration API. Consumers run the packaged revisions through their own Alembic configuration using the package-resource location `pravda:migrations`; the Alembic environment bridges to the async driver internally. The developer `alembic` command reads `PRAVDA_DATABASE_URI` from its command environment.
 - Add dependencies with `uv add`; do not edit `pyproject.toml` manually.
 
 ## Public behavior

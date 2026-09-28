@@ -143,8 +143,8 @@ $ alembic -n pravda upgrade head
 Each environment tracks its own version table (`pravda_alembic_version`),
 so Pravda's history stays independent of the consumer's and the two
 upgrade commands work in either order. The consumer supplies the database
-connection: `sqlalchemy.url` in its configuration or `DATABASE_URL` in the
-environment (see `pravda/migrations/env.py`). Upgrades run the packaged
+connection: `sqlalchemy.url` in its configuration or `PRAVDA_DATABASE_URI` in
+the environment (see `pravda/migrations/env.py`). Upgrades run the packaged
 revisions through Alembic (not `metadata.create_all`) and are safe to
 repeat (a database already at head is a no-op). There is no downgrade or
 automatic-startup behavior: run the upgrade where and when you want the
@@ -198,7 +198,7 @@ uv run ruff format --check .
 
 The migration scripts live inside the package at `pravda/migrations`. After
 changing models in `pravda/db.py`, the developer `alembic` command reads
-`DATABASE_URL` from `.env` and points at the packaged scripts via
+`PRAVDA_DATABASE_URI` from `.env` and points at the packaged scripts via
 `alembic.ini`:
 
 ```bash
