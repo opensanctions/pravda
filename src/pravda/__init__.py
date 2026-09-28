@@ -18,14 +18,12 @@ an application-owned async session factory::
     snapshot = await pravda.snapshot(url)
     history = await pravda.snapshots(url)
 
-Applications own the database engine and dispose it on shutdown. Bring the
-database to the packaged schema head from startup with the migration helper::
-
-    import pravda
-    await pravda.migrate(database_url)
+Applications own the database engine and dispose it on shutdown. Apply
+the packaged Alembic migrations from the consumer's Alembic environment
+(``script_location = pravda:migrations``); see "Database migrations" in
+the README.
 """
 
-from pravda.migrate import migrate
 from pravda.pravda import Pravda, PravdaConfig
 from pravda.snapshots import Snapshot
 
@@ -33,5 +31,4 @@ __all__ = [
     "Pravda",
     "PravdaConfig",
     "Snapshot",
-    "migrate",
 ]

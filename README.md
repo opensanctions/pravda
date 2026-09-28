@@ -119,23 +119,35 @@ async def print_history():
 ## Database migrations
 
 Alembic owns the Pravda schema; the migration scripts ship inside the
-distribution. Bring a PostgreSQL or SQLite database up to the current schema
-head from application startup — the database URL is passed explicitly and **no**
-`DATABASE_URL` environment variable is required:
+distribution. There is no migration API: consumers apply the packaged
+revisions with their own Alembic configuration, addressing the packaged
+scripts through the package-resource location `pravda:migrations`. A
+consumer `alembic.ini` alongside its own migrations:
 
-```python
-import pravda
+```ini
+[DEFAULT]
+prepend_sys_path = %(here)s
 
+[myapp]
+script_location = %(here)s/migrations
 
-async def setup():
-    await pravda.migrate("postgresql+psycopg://user:pass@host/db")
+[pravda]
+script_location = pravda:migrations
 ```
 
-`migrate()` runs the packaged revisions through Alembic (not
-`metadata.create_all`), is safe to call repeatedly (a database already at head
-is a no-op), works from inside a running event loop, and disposes the engine
-it creates. Database and migration failures propagate. There is no downgrade
-or automatic-startup behavior: call `migrate()` where and when you want the
+```console
+$ alembic -n myapp upgrade head
+$ alembic -n pravda upgrade head
+```
+
+Each environment tracks its own version table (`pravda_alembic_version`),
+so Pravda's history stays independent of the consumer's and the two
+upgrade commands work in either order. The consumer supplies the database
+connection: `sqlalchemy.url` in its configuration or `DATABASE_URL` in the
+environment (see `pravda/migrations/env.py`). Upgrades run the packaged
+revisions through Alembic (not `metadata.create_all`) and are safe to
+repeat (a database already at head is a no-op). There is no downgrade or
+automatic-startup behavior: run the upgrade where and when you want the
 schema applied.
 
 ## Storage
@@ -158,8 +170,9 @@ launch or manage it:
   Applications provide their own, such as the Playwright Docker image running
   headed Chrome under xvfb, or a hosted browser service.
 - **Database** — a PostgreSQL or SQLite database the application provisions,
-  opens an async engine for, and [migrates](#database-migrations). The
-  application owns the engine and session factory.
+  opens an async engine for, and upgrades with the [packaged
+  migrations](#database-migrations). The application owns the engine and
+  session factory.
 - **Storage** — an fsspec backend the application points at via
   `storage_base_path`.
 
