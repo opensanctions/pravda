@@ -6,15 +6,13 @@ screenshots, metadata, and HAR recordings with response bodies. Snapshots are
 recorded in a SQL database (PostgreSQL or SQLite) and on any fsspec-compatible
 backend for later inspection or comparison.
 
-Pravda is a **library, not a service**: it connects directly from the caller's
-process to the browser, database, and storage backend. Applications own that
-infrastructure (see [Infrastructure](#infrastructure)).
+Applications own the browser, database, and storage backend (see
+[Infrastructure](#infrastructure)).
 
 - **Python** 3.12+
 - **Browser**: a remote Playwright Chromium WebSocket endpoint (headed Chrome
-  under xvfb). The browser is a client connection; Pravda does not launch one.
-- **Database**: PostgreSQL or SQLite, upgraded to Pravda's schema with the
-  [migration helper](#database-migrations).
+  under xvfb).
+- **Database**: PostgreSQL or SQLite.
 - **Storage**: any fsspec URL (local path, `s3://`, `gs://`, …) for
   content-addressed artifacts.
 
@@ -93,9 +91,8 @@ async def capture_results():
     snapshot = await pravda.snapshot("https://example.com", drive=drive)
 ```
 
-`page` is a real `playwright.async_api.Page`, so selectors, clicks, form
-fills, and other Playwright operations are available. Playwright errors and
-timeouts from `drive` are persisted as failed snapshots. A recording-context
+`page` is a real `playwright.async_api.Page`. Playwright errors and timeouts
+from `drive` are persisted as failed snapshots. A recording-context
 close failure also persists a failed snapshot without artifacts because its HAR
 could not be finalized. Other callback exceptions propagate and persist nothing.
 
@@ -106,7 +103,7 @@ downloaded body into the HAR.
 
 ### Query history
 
-The configured instance returns all snapshots for an exact URL, newest first:
+`snapshots(url)` returns all snapshots for an exact URL, newest first:
 
 ```python
 async def print_history():
@@ -115,40 +112,6 @@ async def print_history():
     for snapshot in history:
         print(snapshot.captured_at, snapshot.http_status)
 ```
-
-## Database migrations
-
-Alembic owns the Pravda schema; the migration scripts ship inside the
-distribution. There is no migration API: consumers apply the packaged
-revisions with their own Alembic configuration, addressing the packaged
-scripts through the package-resource location `pravda:migrations`. A
-consumer `alembic.ini` alongside its own migrations:
-
-```ini
-[DEFAULT]
-prepend_sys_path = %(here)s
-
-[myapp]
-script_location = %(here)s/migrations
-
-[pravda]
-script_location = pravda:migrations
-```
-
-```console
-$ alembic -n myapp upgrade head
-$ alembic -n pravda upgrade head
-```
-
-Each environment tracks its own version table (`pravda_alembic_version`),
-so Pravda's history stays independent of the consumer's and the two
-upgrade commands work in either order. The consumer supplies the database
-connection: `sqlalchemy.url` in its configuration or `PRAVDA_DATABASE_URI` in
-the environment (see `pravda/migrations/env.py`). Upgrades run the packaged
-revisions through Alembic (not `metadata.create_all`) and are safe to
-repeat (a database already at head is a no-op). There is no downgrade or
-automatic-startup behavior: run the upgrade where and when you want the
-schema applied.
 
 ## Storage
 
@@ -163,18 +126,14 @@ propagate, and no snapshot record is persisted.
 
 ## Infrastructure
 
-Applications own the external infrastructure Pravda talks to; Pravda does not
-launch or manage it:
+Applications own the external infrastructure Pravda talks to:
 
-- **Browser** — a remote Playwright Chromium server exposed over WebSocket.
-  Applications provide their own, such as the Playwright Docker image running
-  headed Chrome under xvfb, or a hosted browser service.
-- **Database** — a PostgreSQL or SQLite database the application provisions,
-  opens an async engine for, and upgrades with the [packaged
-  migrations](#database-migrations). The application owns the engine and
-  session factory.
-- **Storage** — an fsspec backend the application points at via
-  `storage_base_path`.
+- **Browser** — a remote Playwright Chromium server exposed over WebSocket,
+  such as the Playwright Docker image running headed Chrome under xvfb, or a
+  hosted browser service.
+- **Database** — a PostgreSQL or SQLite database, accessed through an async
+  SQLAlchemy engine.
+- **Storage** — an fsspec backend, selected via `storage_base_path`.
 
 ## Development
 
@@ -194,16 +153,6 @@ cp .env.example .env
 uv run --env-file .env pytest
 uv run ruff check .
 uv run ruff format --check .
-```
-
-The migration scripts live inside the package at `pravda/migrations`. After
-changing models in `pravda/db.py`, the developer `alembic` command reads
-`PRAVDA_DATABASE_URI` from `.env` and points at the packaged scripts via
-`alembic.ini`:
-
-```bash
-uv run --env-file .env alembic upgrade head
-uv run --env-file .env alembic revision --autogenerate -m "describe the change"
 ```
 
 ## License

@@ -18,10 +18,7 @@ an application-owned async session factory::
     snapshot = await pravda.snapshot(url)
     history = await pravda.snapshots(url)
 
-Applications own the database engine and dispose it on shutdown. Apply
-the packaged Alembic migrations from the consumer's Alembic environment
-(``script_location = pravda:migrations``); see "Database migrations" in
-the README.
+Applications own the database engine and dispose it on shutdown.
 """
 
 from pravda.pravda import Pravda, PravdaConfig
