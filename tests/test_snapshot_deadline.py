@@ -68,7 +68,6 @@ async def test_context_close_timeout_discards_evidence(pravda: Pravda, monkeypat
     assert "context close" in snapshot.error
     assert snapshot.http_status is None
     assert snapshot.final_url is None
-    assert snapshot.plaintext is None
     assert snapshot.rendered_html is None
     assert snapshot.screenshot is None
     assert snapshot.http_archive is None

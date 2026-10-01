@@ -22,7 +22,6 @@ async def _commit_snapshot(
     *,
     final_url: str | None = None,
     http_status: int | None = 200,
-    plaintext: str | None = None,
     rendered_html: str | None = None,
     screenshot: str | None = None,
     http_archive: dict | None = None,
@@ -34,7 +33,6 @@ async def _commit_snapshot(
         captured_at=captured_at,
         http_status=http_status,
         final_url=final_url,
-        plaintext=plaintext,
         rendered_html=rendered_html,
         screenshot=screenshot,
         http_archive=http_archive,
@@ -110,7 +108,6 @@ async def test_snapshot_artifacts_are_none_when_navigation_never_committed(
 
     assert result.final_url is None
     assert result.http_status is None
-    assert result.plaintext is None
     assert result.rendered_html is None
     assert result.screenshot is None
     assert result.http_archive is None
@@ -143,7 +140,6 @@ async def test_from_record_resolves_paths_without_mutating_persisted_record(
         "https://example.com",
         datetime(2026, 1, 1, tzinfo=timezone.utc),
         final_url="https://example.com/page",
-        plaintext="aaa.txt",
         rendered_html="bbb.html",
         screenshot="ccc.png",
         http_archive=http_archive,
@@ -161,7 +157,6 @@ async def test_from_record_resolves_paths_without_mutating_persisted_record(
         snapshot = from_record(record, storage)
 
     prefix = os.path.join(str(tmp_path), "example.com")
-    assert snapshot.plaintext == os.path.join(prefix, "aaa.txt")
     assert snapshot.rendered_html == os.path.join(prefix, "bbb.html")
     assert snapshot.screenshot == os.path.join(prefix, "ccc.png")
     entries = snapshot.http_archive["log"]["entries"]
@@ -170,7 +165,6 @@ async def test_from_record_resolves_paths_without_mutating_persisted_record(
     )
     assert "_file" not in entries[1]["response"]["content"]
 
-    assert record.plaintext == "aaa.txt"
     assert record.rendered_html == "bbb.html"
     assert record.screenshot == "ccc.png"
     assert (

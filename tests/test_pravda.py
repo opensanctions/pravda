@@ -18,7 +18,6 @@ async def test_snapshot_persists_failed_attempt(pravda: Pravda):
     assert snapshot.http_status is None
     assert snapshot.error is not None
     assert snapshot.final_url is None
-    assert snapshot.plaintext is None
     assert snapshot.rendered_html is None
     assert snapshot.screenshot is None
     assert snapshot.http_archive is None
@@ -43,10 +42,9 @@ async def test_snapshot_drive_navigates_and_captures(pravda: Pravda):
     assert snapshot.http_status == 200
     assert snapshot.error is None
     assert snapshot.rendered_html.endswith(".html")
-    assert snapshot.plaintext.endswith(".txt")
     assert snapshot.http_archive is not None
-    text = Path(snapshot.plaintext).read_text()
-    assert "Hello from Pravda" in text
+    html = Path(snapshot.rendered_html).read_text()
+    assert "Hello from Pravda" in html
 
     history = await pravda.snapshots("https://example.com")
     assert any(item.id == snapshot.id for item in history)
@@ -86,10 +84,9 @@ async def test_snapshot_drive_interaction_and_readiness_captured(pravda: Pravda)
 
     assert snapshot.http_status == 200
     assert snapshot.error is None
-    assert snapshot.plaintext.endswith(".txt")
-    text = Path(snapshot.plaintext).read_text()
-    assert "Before interaction" in text
-    assert "After interaction secret" in text
+    html = Path(snapshot.rendered_html).read_text()
+    assert "Before interaction" in html
+    assert "After interaction secret" in html
 
 
 @pytest.mark.asyncio
@@ -113,7 +110,6 @@ async def test_snapshot_drive_download_uses_download_url_and_skips_blank_page(
     assert snapshot.http_status == 200
     assert snapshot.error is None
     assert snapshot.rendered_html is None
-    assert snapshot.plaintext is None
     assert snapshot.screenshot is None
     assert snapshot.http_archive is not None
 
@@ -131,7 +127,6 @@ async def test_snapshot_drive_playwright_error_persists_failed_attempt(pravda: P
     assert snapshot.http_status is None
     assert snapshot.error is not None
     assert snapshot.final_url is None
-    assert snapshot.plaintext is None
     assert snapshot.rendered_html is None
     assert snapshot.screenshot is None
     assert snapshot.http_archive is None

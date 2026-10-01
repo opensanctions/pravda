@@ -33,7 +33,6 @@ async def test_capture_page_returns_evidence(page: Page, storage: Storage):
     assert result.final_url == "https://example.com/"
 
     # The HAR is a context-lifecycle concern, so capture_page does not touch it.
-    assert result.plaintext.endswith(".txt")
     assert result.rendered_html.endswith(".html")
     assert result.screenshot.endswith(".png")
 
@@ -52,7 +51,6 @@ async def test_capture_page_downloads_pdf(page: Page, storage: Storage):
     assert result.download is not None
     assert result.download.url == "https://example.com/doc.pdf"
     assert result.download.data == (FIXTURES / "sample.pdf").read_bytes()
-    assert result.plaintext is None
     assert result.rendered_html is None
     assert result.screenshot is None
 
@@ -72,7 +70,6 @@ async def test_capture_page_goto_timeout_skips_captures(page: Page, storage: Sto
     assert result.error is not None
     assert result.final_url is None
 
-    assert result.plaintext is None
     assert result.rendered_html is None
     assert result.screenshot is None
 
@@ -103,7 +100,6 @@ async def test_http_commit_captured_when_load_times_out(
 
     assert result.error is not None
 
-    assert result.plaintext is not None
     assert result.rendered_html is not None
     assert result.screenshot is not None
 
@@ -112,7 +108,7 @@ async def test_http_commit_captured_when_load_times_out(
 async def test_capture_page_dom_capture_timeout_skips_content(
     page: Page, storage: Storage, monkeypatch
 ):
-    """A DOM read exceeding its budget drops html/plaintext but keeps the screenshot."""
+    """A DOM read exceeding its budget drops html but keeps the screenshot."""
     fixture_html = (FIXTURES / "example.html").read_text()
     await page.route("https://example.com", fulfill_html)
 
@@ -130,7 +126,6 @@ async def test_capture_page_dom_capture_timeout_skips_content(
     assert result.http_status == 200
     assert result.error is None
     assert result.rendered_html is None
-    assert result.plaintext is None
     assert result.screenshot is not None
 
 

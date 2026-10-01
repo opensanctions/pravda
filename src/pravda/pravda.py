@@ -123,7 +123,6 @@ async def _persist_snapshot(
         final_url=result.final_url,
         http_status=result.http_status,
         error=result.error,
-        plaintext=result.plaintext,
         rendered_html=result.rendered_html,
         screenshot=result.screenshot,
         http_archive=http_archive,

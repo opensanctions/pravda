@@ -6,7 +6,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse
 
-from bs4 import BeautifulSoup
 from playwright.async_api import Download, Page
 from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import TimeoutError as PlaywrightTimeout
@@ -52,7 +51,6 @@ class CaptureResult:
     http_status: int | None = None
     error: str | None = None
     final_url: str | None = None
-    plaintext: str | None = None
     rendered_html: str | None = None
     screenshot: str | None = None
     download: DownloadedBody | None = None
@@ -112,7 +110,7 @@ async def capture_page(page: Page, url: str, storage: Storage) -> CaptureResult:
         downloaded: DownloadedBody | None = None
         http_status = navigation.http_status
         final_url = navigation.final_url
-        plaintext = rendered_html = screenshot = None
+        rendered_html = screenshot = None
 
         if navigation.is_download:
             download = await observer.wait_download(url)
@@ -120,7 +118,7 @@ async def capture_page(page: Page, url: str, storage: Storage) -> CaptureResult:
             http_status = observer.navigation_status
             final_url = downloaded.url
         elif navigation.http_status is not None:
-            plaintext, rendered_html, screenshot = await _capture_artifacts(
+            rendered_html, screenshot = await _capture_artifacts(
                 page, navigation.final_url, storage
             )
 
@@ -128,7 +126,6 @@ async def capture_page(page: Page, url: str, storage: Storage) -> CaptureResult:
             http_status=http_status,
             error=navigation.error,
             final_url=final_url,
-            plaintext=plaintext,
             rendered_html=rendered_html,
             screenshot=screenshot,
             download=downloaded,
@@ -185,8 +182,8 @@ async def _store_blob(data: bytes, extension: str, url: str, storage: Storage) -
 
 async def _capture_artifacts(
     page: Page, url: str, storage: Storage
-) -> tuple[str | None, str | None, str | None]:
-    """Stop loading and capture plaintext, rendered HTML, and screenshot."""
+) -> tuple[str | None, str | None]:
+    """Stop loading and capture rendered HTML and screenshot."""
     try:
         async with asyncio.timeout(DOM_CAPTURE_TIMEOUT_S):
             cdp = await page.context.new_cdp_session(page)
@@ -199,15 +196,9 @@ async def _capture_artifacts(
         logger.warning("Failed to capture DOM content for %s: %s", url, exception)
         html = None
 
-    rendered_html = plaintext = None
+    rendered_html = None
     if html is not None:
         rendered_html = await _store_blob(html.encode(), "html", url, storage)
-
-        # Derive text from the DOM so hidden and injected nodes are included.
-        text = " ".join(
-            BeautifulSoup(html, "html.parser").get_text(separator=" ").split()
-        )
-        plaintext = await _store_blob(text.encode(), "txt", url, storage)
 
     # Clipping is the reliable way to cap full-page screenshots to viewport width.
     viewport_size = page.viewport_size
@@ -228,7 +219,7 @@ async def _capture_artifacts(
         storage,
     )
 
-    return plaintext, rendered_html, screenshot
+    return rendered_html, screenshot
 
 
 async def _capture_one(
@@ -258,17 +249,14 @@ async def capture_current(
     if download is not None:
         downloaded = await _save_download(download)
 
-    plaintext = rendered_html = screenshot = None
+    rendered_html = screenshot = None
     if navigation_status is not None and download is None:
-        plaintext, rendered_html, screenshot = await _capture_artifacts(
-            page, final_url, storage
-        )
+        rendered_html, screenshot = await _capture_artifacts(page, final_url, storage)
 
     return CaptureResult(
         http_status=navigation_status,
         error=None,
         final_url=final_url,
-        plaintext=plaintext,
         rendered_html=rendered_html,
         screenshot=screenshot,
         download=downloaded,

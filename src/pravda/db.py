@@ -24,7 +24,6 @@ class SnapshotRecord(Base):
     http_status: Mapped[int | None] = mapped_column(Integer, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
-    plaintext: Mapped[str | None] = mapped_column(Text, nullable=True)
     rendered_html: Mapped[str | None] = mapped_column(Text, nullable=True)
     screenshot: Mapped[str | None] = mapped_column(Text, nullable=True)
     http_archive: Mapped[dict | None] = mapped_column(

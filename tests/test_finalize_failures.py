@@ -75,7 +75,7 @@ async def test_snapshot_har_storage_failure_propagates_without_persisting(
     async def fail_har_pipe_file(path, value, **kwargs):
         nonlocal writes
         writes += 1
-        if writes > 2:
+        if writes > 1:
             raise OSError("storage backend down")
         await original_pipe_file(path, value, **kwargs)
 
