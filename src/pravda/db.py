@@ -26,6 +26,7 @@ class SnapshotRecord(Base):
 
     rendered_html: Mapped[str | None] = mapped_column(Text, nullable=True)
     screenshot: Mapped[str | None] = mapped_column(Text, nullable=True)
+    standalone_html: Mapped[str | None] = mapped_column(Text, nullable=True)
     http_archive: Mapped[dict | None] = mapped_column(
         JSON().with_variant(JSONB(), "postgresql"), nullable=True
     )

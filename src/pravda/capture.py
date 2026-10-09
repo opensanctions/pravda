@@ -52,8 +52,10 @@ class CaptureResult:
     http_status: int | None = None
     error: str | None = None
     final_url: str | None = None
+    html_content: str | None = None
     rendered_html: str | None = None
     screenshot: str | None = None
+    standalone_html: str | None = None
     download: DownloadedBody | None = None
 
 
@@ -111,7 +113,7 @@ async def capture_page(page: Page, url: str, storage: Storage) -> CaptureResult:
         downloaded: DownloadedBody | None = None
         http_status = navigation.http_status
         final_url = navigation.final_url
-        rendered_html = screenshot = None
+        html_content = rendered_html = screenshot = None
 
         if navigation.is_download:
             download = await observer.wait_download(url)
@@ -119,7 +121,7 @@ async def capture_page(page: Page, url: str, storage: Storage) -> CaptureResult:
             http_status = observer.navigation_status
             final_url = downloaded.url
         elif navigation.http_status is not None:
-            rendered_html, screenshot = await _capture_artifacts(
+            html_content, rendered_html, screenshot = await _capture_artifacts(
                 page, navigation.final_url, storage
             )
 
@@ -127,6 +129,7 @@ async def capture_page(page: Page, url: str, storage: Storage) -> CaptureResult:
             http_status=http_status,
             error=navigation.error,
             final_url=final_url,
+            html_content=html_content,
             rendered_html=rendered_html,
             screenshot=screenshot,
             download=downloaded,
@@ -183,8 +186,8 @@ async def _store_blob(data: bytes, extension: str, url: str, storage: Storage) -
 
 async def _capture_artifacts(
     page: Page, url: str, storage: Storage
-) -> tuple[str | None, str | None]:
-    """Wait for the DOM to settle, then capture its artifacts."""
+) -> tuple[str | None, str | None, str | None]:
+    """Wait for the DOM to settle, then capture its HTML and artifacts."""
     try:
         async with asyncio.timeout(DOM_CAPTURE_TIMEOUT_S):
             # Attribute changes re-arm the quiet timer alongside structural ones:
@@ -241,7 +244,7 @@ async def _capture_artifacts(
         storage,
     )
 
-    return rendered_html, screenshot
+    return html, rendered_html, screenshot
 
 
 async def _capture_one(
@@ -271,14 +274,17 @@ async def capture_current(
     if download is not None:
         downloaded = await _save_download(download)
 
-    rendered_html = screenshot = None
+    html_content = rendered_html = screenshot = None
     if navigation_status is not None and download is None:
-        rendered_html, screenshot = await _capture_artifacts(page, final_url, storage)
+        html_content, rendered_html, screenshot = await _capture_artifacts(
+            page, final_url, storage
+        )
 
     return CaptureResult(
         http_status=navigation_status,
         error=None,
         final_url=final_url,
+        html_content=html_content,
         rendered_html=rendered_html,
         screenshot=screenshot,
         download=downloaded,

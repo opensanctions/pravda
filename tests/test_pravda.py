@@ -5,8 +5,9 @@ from pathlib import Path
 import pytest
 from playwright.async_api import Error as PlaywrightError
 
+import pravda.pravda as pravda_module
 from pravda import Pravda
-from tests.helpers import fulfill_html, fulfill_pdf
+from tests.helpers import PNG_BYTES, fulfill_html, fulfill_pdf, fulfill_standalone
 
 
 @pytest.mark.asyncio
@@ -21,6 +22,7 @@ async def test_snapshot_persists_failed_attempt(pravda: Pravda):
     assert snapshot.rendered_html is None
     assert snapshot.screenshot is None
     assert snapshot.http_archive is None
+    assert snapshot.standalone_html is None
 
     history = await pravda.snapshots("https://localhost:39999/")
     assert any(item.id == snapshot.id for item in history)
@@ -48,6 +50,69 @@ async def test_snapshot_drive_navigates_and_captures(pravda: Pravda):
 
     history = await pravda.snapshots("https://example.com")
     assert any(item.id == snapshot.id for item in history)
+
+
+@pytest.mark.asyncio
+async def test_snapshot_stores_standalone_html(pravda: Pravda):
+    """A page capture also derives a self-contained HTML artifact."""
+
+    async def drive(page, url):
+        await page.route(url, fulfill_standalone)
+        await page.route(
+            "https://example.com/style.css",
+            lambda route: route.fulfill(
+                body="body { background-color: teal; }",
+                headers={"content-type": "text/css"},
+            ),
+        )
+        await page.route(
+            "https://example.com/logo.png",
+            lambda route: route.fulfill(
+                body=PNG_BYTES, headers={"content-type": "image/png"}
+            ),
+        )
+        await page.route(
+            "https://example.com/app.js",
+            lambda route: route.fulfill(
+                body="alert(1)", headers={"content-type": "text/javascript"}
+            ),
+        )
+        await page.goto(url, wait_until="load")
+
+    snapshot = await pravda.snapshot("https://example.com", drive=drive)
+
+    assert snapshot.http_status == 200
+    assert snapshot.error is None
+    assert snapshot.standalone_html is not None
+    html = Path(snapshot.standalone_html).read_text()
+    assert "Standalone fixture" in html
+    assert "background-color: teal" in html
+    assert "data:image/png;base64," in html
+    assert "<script" not in html
+
+
+@pytest.mark.asyncio
+async def test_snapshot_standalone_failure_keeps_primary_evidence(
+    pravda: Pravda, monkeypatch
+):
+    """A standalone-HTML derivation failure degrades to a missing artifact."""
+
+    async def failing_derivation(*args):
+        raise ValueError("conversion failed")
+
+    monkeypatch.setattr(pravda_module, "capture_standalone_html", failing_derivation)
+
+    async def drive(page, url):
+        await page.route(url, fulfill_html)
+        await page.goto(url, wait_until="load")
+
+    snapshot = await pravda.snapshot("https://example.com", drive=drive)
+
+    assert snapshot.http_status == 200
+    assert snapshot.error is None
+    assert snapshot.rendered_html is not None
+    assert snapshot.http_archive is not None
+    assert snapshot.standalone_html is None
 
 
 @pytest.mark.asyncio
@@ -112,6 +177,7 @@ async def test_snapshot_drive_download_uses_download_url_and_skips_blank_page(
     assert snapshot.rendered_html is None
     assert snapshot.screenshot is None
     assert snapshot.http_archive is not None
+    assert snapshot.standalone_html is None
 
 
 @pytest.mark.asyncio
@@ -130,6 +196,7 @@ async def test_snapshot_drive_playwright_error_persists_failed_attempt(pravda: P
     assert snapshot.rendered_html is None
     assert snapshot.screenshot is None
     assert snapshot.http_archive is None
+    assert snapshot.standalone_html is None
 
     history = await pravda.snapshots("https://localhost:39999/")
     assert any(item.id == snapshot.id for item in history)

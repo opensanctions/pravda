@@ -24,6 +24,7 @@ async def _commit_snapshot(
     http_status: int | None = 200,
     rendered_html: str | None = None,
     screenshot: str | None = None,
+    standalone_html: str | None = None,
     http_archive: dict | None = None,
 ) -> uuid.UUID:
     """Insert and commit a snapshot through the test sessionmaker fixture."""
@@ -35,6 +36,7 @@ async def _commit_snapshot(
         final_url=final_url,
         rendered_html=rendered_html,
         screenshot=screenshot,
+        standalone_html=standalone_html,
         http_archive=http_archive,
     )
     async with sessionmaker() as session:
@@ -110,6 +112,7 @@ async def test_snapshot_artifacts_are_none_when_navigation_never_committed(
     assert result.http_status is None
     assert result.rendered_html is None
     assert result.screenshot is None
+    assert result.standalone_html is None
     assert result.http_archive is None
 
 
@@ -142,6 +145,7 @@ async def test_from_record_resolves_paths_without_mutating_persisted_record(
         final_url="https://example.com/page",
         rendered_html="bbb.html",
         screenshot="ccc.png",
+        standalone_html="ddd.html",
         http_archive=http_archive,
     )
 
@@ -159,6 +163,7 @@ async def test_from_record_resolves_paths_without_mutating_persisted_record(
     prefix = os.path.join(str(tmp_path), "example.com")
     assert snapshot.rendered_html == os.path.join(prefix, "bbb.html")
     assert snapshot.screenshot == os.path.join(prefix, "ccc.png")
+    assert snapshot.standalone_html == os.path.join(prefix, "ddd.html")
     entries = snapshot.http_archive["log"]["entries"]
     assert entries[0]["response"]["content"]["_file"] == os.path.join(
         prefix, "abc.html"
@@ -167,6 +172,7 @@ async def test_from_record_resolves_paths_without_mutating_persisted_record(
 
     assert record.rendered_html == "bbb.html"
     assert record.screenshot == "ccc.png"
+    assert record.standalone_html == "ddd.html"
     assert (
         record.http_archive["log"]["entries"][0]["response"]["content"]["_file"]
         == "abc.html"

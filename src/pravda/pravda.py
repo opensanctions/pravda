@@ -23,17 +23,20 @@ from pravda.capture import (
 from pravda.db import SnapshotRecord
 from pravda.http_archive import capture_http_archive
 from pravda.snapshots import Snapshot, from_record
+from pravda.standalone import capture_standalone_html
 from pravda.storage import Storage
 
 logger = logging.getLogger(__name__)
 
 # Capture and finalization form one atomic evidence operation. A context-close
 # failure invalidates the result; cleanup is best-effort. Storage, persistence,
-# non-Playwright callback failures, and cancellation propagate.
+# non-Playwright callback failures, and cancellation propagate. Standalone-HTML
+# derivation failures drop only that artifact.
 SNAPSHOT_TIMEOUT_S = 240
 CONNECT_TIMEOUT_MS = 10_000
 CONTEXT_CLOSE_TIMEOUT_S = 30
 HAR_PROCESSING_TIMEOUT_S = 20
+STANDALONE_TIMEOUT_S = 20
 CLEANUP_TIMEOUT_S = 5
 PERSIST_TIMEOUT_S = 15
 
@@ -89,6 +92,23 @@ async def _finalize_capture(
         )
     if http_archive is None:
         raise _CaptureFailure("browser context produced an invalid HTTP archive")
+
+    if result.html_content is not None:
+        try:
+            async with asyncio.timeout(STANDALONE_TIMEOUT_S):
+                result.standalone_html = await capture_standalone_html(
+                    http_archive_path,
+                    http_archive,
+                    result.html_content,
+                    result.final_url,
+                    storage,
+                )
+        except Exception as error:
+            logger.warning(
+                "Standalone HTML derivation failed for %s: %s",
+                result.final_url,
+                error,
+            )
     return result, http_archive
 
 
@@ -125,6 +145,7 @@ async def _persist_snapshot(
         error=result.error,
         rendered_html=result.rendered_html,
         screenshot=result.screenshot,
+        standalone_html=result.standalone_html,
         http_archive=http_archive,
     )
     async with asyncio.timeout(PERSIST_TIMEOUT_S):

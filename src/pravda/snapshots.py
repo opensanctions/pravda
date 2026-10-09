@@ -22,14 +22,15 @@ class Snapshot:
     error: str | None
     rendered_html: str | None
     screenshot: str | None
+    standalone_html: str | None
     http_archive: dict | None
 
 
 def _resolve_artifacts(
     record: SnapshotRecord, storage: Storage
-) -> tuple[str | None, str | None, dict | None]:
+) -> tuple[str | None, str | None, str | None, dict | None]:
     if record.final_url is None:
-        return None, None, None
+        return None, None, None, None
 
     prefix = storage.content_prefix(record.final_url)
     http_archive = copy.deepcopy(record.http_archive)
@@ -42,13 +43,18 @@ def _resolve_artifacts(
     return (
         os.path.join(prefix, record.rendered_html) if record.rendered_html else None,
         os.path.join(prefix, record.screenshot) if record.screenshot else None,
+        os.path.join(prefix, record.standalone_html)
+        if record.standalone_html
+        else None,
         http_archive,
     )
 
 
 def from_record(record: SnapshotRecord, storage: Storage) -> Snapshot:
     """Map a database row to a public snapshot."""
-    rendered_html, screenshot, http_archive = _resolve_artifacts(record, storage)
+    rendered_html, screenshot, standalone_html, http_archive = _resolve_artifacts(
+        record, storage
+    )
     return Snapshot(
         id=record.id,
         url=record.url,
@@ -58,5 +64,6 @@ def from_record(record: SnapshotRecord, storage: Storage) -> Snapshot:
         error=record.error,
         rendered_html=rendered_html,
         screenshot=screenshot,
+        standalone_html=standalone_html,
         http_archive=http_archive,
     )

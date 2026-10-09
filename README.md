@@ -2,7 +2,8 @@
 
 Pravda is a Python library for durable web evidence capture. It drives a
 remote Playwright browser to preserve rendered HTML, full-page
-screenshots, metadata, and HAR recordings with response bodies. Snapshots are
+screenshots, standalone HTML, metadata, and HAR recordings with response
+bodies. Snapshots are
 recorded in a SQL database (PostgreSQL or SQLite) and on any fsspec-compatible
 backend for later inspection or comparison.
 
@@ -117,8 +118,12 @@ async def print_history():
 
 Artifacts are content-addressed files organized under the captured URL's
 hostname. The public `Snapshot` resolves its artifact fields to full storage
-paths: `rendered_html` and `screenshot` point at stored files,
-and each HAR `response.content._file` resolves to its stored response body.
+paths: `rendered_html`, `screenshot`, and `standalone_html` point at stored
+files, and each HAR `response.content._file` resolves to its stored response
+body. `standalone_html` is a self-contained rendering of the page —
+stylesheets inlined, images embedded as data URIs, active content sanitized —
+derived from the rendered DOM and the recorded HAR bodies for direct
+inspection; derivation failures drop only that artifact.
 Persisted database fields and HAR values keep their relative, content-addressed
 names; consumers read the resolved paths directly from the shared fsspec
 backend. Storage writes are bounded; timeouts and other storage failures
