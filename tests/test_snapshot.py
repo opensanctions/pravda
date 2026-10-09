@@ -7,8 +7,7 @@ from playwright.async_api import TimeoutError as PlaywrightTimeout
 
 import pravda.capture as capture_module
 from pravda.capture import _save_download, capture_page
-from pravda.storage import Storage
-from tests.helpers import FIXTURES, fulfill_html, fulfill_pdf, slow_pipe_file
+from tests.helpers import FIXTURES, fulfill_html, fulfill_pdf
 
 
 @pytest.fixture()
@@ -22,27 +21,26 @@ async def page(browser: Browser):
 
 
 @pytest.mark.asyncio
-async def test_capture_page_returns_evidence(page: Page, storage: Storage):
+async def test_capture_page_returns_evidence(page: Page):
     """Capture a page using a routed fixture and inspect the evidence."""
     await page.route("https://example.com", fulfill_html)
 
-    result = await capture_page(page, "https://example.com", storage)
+    result = await capture_page(page, "https://example.com")
 
     assert result.http_status == 200
     assert result.error is None
     assert result.final_url == "https://example.com/"
 
-    # The HAR is a context-lifecycle concern, so capture_page does not touch it.
-    assert result.rendered_html.endswith(".html")
-    assert result.screenshot.endswith(".png")
+    assert "Hello from Pravda" in result.html
+    assert result.screenshot.startswith(b"\x89PNG")
 
 
 @pytest.mark.asyncio
-async def test_capture_page_downloads_pdf(page: Page, storage: Storage):
+async def test_capture_page_downloads_pdf(page: Page):
     """A URL serving application/pdf is captured as a downloaded body."""
     await page.route("https://example.com/doc.pdf", fulfill_pdf)
 
-    result = await capture_page(page, "https://example.com/doc.pdf", storage)
+    result = await capture_page(page, "https://example.com/doc.pdf")
 
     assert result.http_status == 200
     assert result.error is None
@@ -51,12 +49,12 @@ async def test_capture_page_downloads_pdf(page: Page, storage: Storage):
     assert result.download is not None
     assert result.download.url == "https://example.com/doc.pdf"
     assert result.download.data == (FIXTURES / "sample.pdf").read_bytes()
-    assert result.rendered_html is None
+    assert result.html is None
     assert result.screenshot is None
 
 
 @pytest.mark.asyncio
-async def test_capture_page_goto_timeout_skips_captures(page: Page, storage: Storage):
+async def test_capture_page_goto_timeout_skips_captures(page: Page):
     """A navigation that never commits skips captures entirely."""
 
     async def fake_goto(*args, **kwargs):
@@ -64,20 +62,18 @@ async def test_capture_page_goto_timeout_skips_captures(page: Page, storage: Sto
 
     page.goto = fake_goto
 
-    result = await capture_page(page, "https://timeout.example.com", storage)
+    result = await capture_page(page, "https://timeout.example.com")
 
     assert result.http_status is None
     assert result.error is not None
     assert result.final_url is None
 
-    assert result.rendered_html is None
+    assert result.html is None
     assert result.screenshot is None
 
 
 @pytest.mark.asyncio
-async def test_http_commit_captured_when_load_times_out(
-    page: Page, storage: Storage, monkeypatch
-):
+async def test_http_commit_captured_when_load_times_out(page: Page, monkeypatch):
     """HTTP status comes from commit even when load times out."""
     # Hang the image so `load` never fires, but serve the HTML fine.
     await page.route(
@@ -93,21 +89,19 @@ async def test_http_commit_captured_when_load_times_out(
     )
 
     monkeypatch.setattr(capture_module, "LOAD_TIMEOUT_MS", 2000)
-    result = await capture_page(page, "https://slow.example.com", storage)
+    result = await capture_page(page, "https://slow.example.com")
 
     assert result.http_status == 200
     assert result.final_url == "https://slow.example.com/"
 
     assert result.error is not None
 
-    assert result.rendered_html is not None
+    assert result.html is not None
     assert result.screenshot is not None
 
 
 @pytest.mark.asyncio
-async def test_capture_page_dom_capture_timeout_skips_content(
-    page: Page, storage: Storage, monkeypatch
-):
+async def test_capture_page_dom_capture_timeout_skips_content(page: Page, monkeypatch):
     """A DOM read exceeding its budget drops html but keeps the screenshot."""
     fixture_html = (FIXTURES / "example.html").read_text()
     await page.route("https://example.com", fulfill_html)
@@ -121,19 +115,17 @@ async def test_capture_page_dom_capture_timeout_skips_content(
 
     page.content = slow_content
 
-    result = await capture_page(page, "https://example.com", storage)
+    result = await capture_page(page, "https://example.com")
 
     assert result.http_status == 200
     assert result.error is None
-    assert result.rendered_html is None
+    assert result.html is None
     assert result.screenshot is not None
 
 
 @pytest.mark.asyncio
-async def test_capture_page_waits_for_dom_settle(
-    page: Page, storage: Storage, tmp_path: Path
-):
-    """Late DOM re-renders land in rendered_html instead of the initial state."""
+async def test_capture_page_waits_for_dom_settle(page: Page):
+    """Late DOM re-renders land in the captured HTML instead of the initial state."""
     await page.route(
         "https://example.com",
         lambda route: route.fulfill(
@@ -142,21 +134,17 @@ async def test_capture_page_waits_for_dom_settle(
         ),
     )
 
-    result = await capture_page(page, "https://example.com", storage)
+    result = await capture_page(page, "https://example.com")
 
     assert result.http_status == 200
-    blob = tmp_path / "example.com" / result.rendered_html
-    html = blob.read_text()
-    assert "final" in html
-    assert ">loading<" not in html
-    assert ">intermediate<" not in html
-    assert ">still-hydrating<" not in html
+    assert "final" in result.html
+    assert ">loading<" not in result.html
+    assert ">intermediate<" not in result.html
+    assert ">still-hydrating<" not in result.html
 
 
 @pytest.mark.asyncio
-async def test_capture_page_never_settling_dom_drops_html(
-    page: Page, storage: Storage, monkeypatch
-):
+async def test_capture_page_never_settling_dom_drops_html(page: Page, monkeypatch):
     """A DOM that never settles hits the capture budget and drops only html."""
     await page.route(
         "https://example.com",
@@ -167,18 +155,16 @@ async def test_capture_page_never_settling_dom_drops_html(
     )
     monkeypatch.setattr(capture_module, "DOM_CAPTURE_TIMEOUT_S", 1.5)
 
-    result = await capture_page(page, "https://example.com", storage)
+    result = await capture_page(page, "https://example.com")
 
     assert result.http_status == 200
     assert result.error is None
-    assert result.rendered_html is None
+    assert result.html is None
     assert result.screenshot is not None
 
 
 @pytest.mark.asyncio
-async def test_capture_page_hanging_font_drops_screenshot(
-    page: Page, storage: Storage, monkeypatch
-):
+async def test_capture_page_hanging_font_drops_screenshot(page: Page, monkeypatch):
     """A font that never loads stalls only the screenshot, not the html."""
     await page.route(
         "https://example.com/hanging-font.woff2",
@@ -194,29 +180,14 @@ async def test_capture_page_hanging_font_drops_screenshot(
     monkeypatch.setattr(capture_module, "LOAD_TIMEOUT_MS", 2000)
     monkeypatch.setattr(capture_module, "CAPTURE_TIMEOUT_MS", 1500)
 
-    result = await capture_page(page, "https://example.com", storage)
+    result = await capture_page(page, "https://example.com")
 
     assert result.http_status == 200
     # The hanging font keeps the load event from firing, and Playwright's
     # screenshot stalls on document.fonts.ready: both degrade gracefully.
     assert result.error is not None
-    assert result.rendered_html is not None
+    assert result.html is not None
     assert result.screenshot is None
-
-
-@pytest.mark.asyncio
-async def test_capture_page_storage_write_timeout_propagates(
-    page: Page, storage: Storage, monkeypatch
-):
-    """An artifact write exceeding its budget propagates the timeout."""
-    await page.route("https://example.com", fulfill_html)
-
-    # Stall the storage backend past the write budget.
-    monkeypatch.setattr(capture_module, "STORAGE_WRITE_TIMEOUT_S", 0.01)
-    monkeypatch.setattr(storage.fs, "_pipe_file", slow_pipe_file)
-
-    with pytest.raises(asyncio.TimeoutError):
-        await capture_page(page, "https://example.com", storage)
 
 
 class _FakeDownload:

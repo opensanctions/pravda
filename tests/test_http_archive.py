@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-import pravda.http_archive as har_module
+import pravda.storage as storage_module
 from pravda.capture import DownloadedBody
 from pravda.http_archive import capture_http_archive
 from pravda.storage import Storage
@@ -97,7 +97,7 @@ async def test_download_body_storage_timeout_propagates(storage: Storage, monkey
     with zipfile.ZipFile(zip_path, "w") as archive:
         archive.writestr("har.har", json.dumps(manifest))
 
-    monkeypatch.setattr(har_module, "STORAGE_WRITE_TIMEOUT_S", 0.01)
+    monkeypatch.setattr(storage_module, "STORAGE_WRITE_TIMEOUT_S", 0.01)
 
     monkeypatch.setattr(storage.fs, "_pipe_file", slow_pipe_file)
 

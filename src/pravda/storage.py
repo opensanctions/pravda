@@ -1,5 +1,6 @@
 """Content-addressed blob storage over fsspec."""
 
+import asyncio
 import hashlib
 import ipaddress
 import logging
@@ -71,4 +72,11 @@ class Storage:
         await self.fs._pipe_file(path, data)
 
         logger.debug("Stored blob: %s (%d bytes)", name, len(data))
+        return name
+
+    async def put_artifact(self, data: bytes, ext: str, url: str) -> str:
+        """Store *data* content-addressed and return its name."""
+        name = cas_name(data, ext)
+        async with asyncio.timeout(STORAGE_WRITE_TIMEOUT_S):
+            await self.put_blob(name, data, url)
         return name

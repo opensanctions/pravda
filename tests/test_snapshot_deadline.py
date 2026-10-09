@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 import pravda.capture as capture_module
 import pravda.pravda as pravda_module
+import pravda.storage as storage_module
 from pravda import Pravda
 from tests.helpers import fulfill_html, slow_pipe_file
 
@@ -77,7 +78,7 @@ async def test_context_close_timeout_discards_evidence(pravda: Pravda, monkeypat
 async def test_storage_timeout_is_not_mistaken_for_snapshot_timeout(
     pravda: Pravda, monkeypatch
 ):
-    monkeypatch.setattr(capture_module, "STORAGE_WRITE_TIMEOUT_S", 0.01)
+    monkeypatch.setattr(storage_module, "STORAGE_WRITE_TIMEOUT_S", 0.01)
 
     monkeypatch.setattr(pravda._storage.fs, "_pipe_file", slow_pipe_file)
 

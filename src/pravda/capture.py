@@ -10,8 +10,6 @@ from playwright.async_api import Download, Page
 from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import TimeoutError as PlaywrightTimeout
 
-from pravda.storage import STORAGE_WRITE_TIMEOUT_S, Storage, cas_name
-
 logger = logging.getLogger(__name__)
 
 NAV_TIMEOUT_MS = 10_000
@@ -52,10 +50,8 @@ class CaptureResult:
     http_status: int | None = None
     error: str | None = None
     final_url: str | None = None
-    html_content: str | None = None
-    rendered_html: str | None = None
-    screenshot: str | None = None
-    standalone_html: str | None = None
+    html: str | None = None
+    screenshot: bytes | None = None
     download: DownloadedBody | None = None
 
 
@@ -105,7 +101,7 @@ class _PageObserver:
         return self.download
 
 
-async def capture_page(page: Page, url: str, storage: Storage) -> CaptureResult:
+async def capture_page(page: Page, url: str) -> CaptureResult:
     """Navigate to *url* and capture its status, page artifacts, or download."""
     async with _PageObserver(page) as observer:
         navigation = await _navigate(page, url)
@@ -113,7 +109,7 @@ async def capture_page(page: Page, url: str, storage: Storage) -> CaptureResult:
         downloaded: DownloadedBody | None = None
         http_status = navigation.http_status
         final_url = navigation.final_url
-        html_content = rendered_html = screenshot = None
+        html = screenshot = None
 
         if navigation.is_download:
             download = await observer.wait_download(url)
@@ -121,16 +117,13 @@ async def capture_page(page: Page, url: str, storage: Storage) -> CaptureResult:
             http_status = observer.navigation_status
             final_url = downloaded.url
         elif navigation.http_status is not None:
-            html_content, rendered_html, screenshot = await _capture_artifacts(
-                page, navigation.final_url, storage
-            )
+            html, screenshot = await _capture_artifacts(page)
 
         return CaptureResult(
             http_status=http_status,
             error=navigation.error,
             final_url=final_url,
-            html_content=html_content,
-            rendered_html=rendered_html,
+            html=html,
             screenshot=screenshot,
             download=downloaded,
         )
@@ -178,16 +171,8 @@ async def _navigate(page: Page, url: str) -> _Navigation:
         )
 
 
-async def _store_blob(data: bytes, extension: str, url: str, storage: Storage) -> str:
-    """Store one artifact within the storage-write deadline."""
-    async with asyncio.timeout(STORAGE_WRITE_TIMEOUT_S):
-        return await storage.put_blob(cas_name(data, extension), data, url)
-
-
-async def _capture_artifacts(
-    page: Page, url: str, storage: Storage
-) -> tuple[str | None, str | None, str | None]:
-    """Wait for the DOM to settle, then capture its HTML and artifacts."""
+async def _capture_artifacts(page: Page) -> tuple[str | None, bytes | None]:
+    """Wait for the DOM to settle, then capture its HTML and screenshot."""
     try:
         async with asyncio.timeout(DOM_CAPTURE_TIMEOUT_S):
             # Attribute changes re-arm the quiet timer alongside structural ones:
@@ -215,15 +200,11 @@ async def _capture_artifacts(
             )
             html = await page.content()
     except (asyncio.TimeoutError, PlaywrightTimeout):
-        logger.warning("Timeout capturing DOM content for %s", url)
+        logger.warning("Timeout capturing DOM content for %s", page.url)
         html = None
     except PlaywrightError as exception:
-        logger.warning("Failed to capture DOM content for %s: %s", url, exception)
+        logger.warning("Failed to capture DOM content for %s: %s", page.url, exception)
         html = None
-
-    rendered_html = None
-    if html is not None:
-        rendered_html = await _store_blob(html.encode(), "html", url, storage)
 
     # Clipping is the reliable way to cap full-page screenshots to viewport width.
     viewport_size = page.viewport_size
@@ -232,34 +213,20 @@ async def _capture_artifacts(
         if viewport_size
         else None
     )
-    screenshot = await _capture_one(
-        "screenshot",
-        lambda: page.screenshot(
+    try:
+        screenshot = await page.screenshot(
             full_page=True,
             clip=screenshot_clip,
             timeout=CAPTURE_TIMEOUT_MS,
-        ),
-        url,
-        "png",
-        storage,
-    )
-
-    return html, rendered_html, screenshot
-
-
-async def _capture_one(
-    name: str, callback, url: str, extension: str, storage: Storage
-) -> str | None:
-    """Capture and store one artifact, returning ``None`` on capture failure."""
-    try:
-        data = await callback()
+        )
     except PlaywrightTimeout:
-        logger.warning("Timeout capturing %s for %s", name, url)
-        return None
+        logger.warning("Timeout capturing screenshot for %s", page.url)
+        screenshot = None
     except PlaywrightError as exception:
-        logger.warning("Failed to capture %s for %s: %s", name, url, exception)
-        return None
-    return await _store_blob(data, extension, url, storage)
+        logger.warning("Failed to capture screenshot for %s: %s", page.url, exception)
+        screenshot = None
+
+    return html, screenshot
 
 
 async def capture_current(
@@ -267,33 +234,27 @@ async def capture_current(
     final_url: str,
     navigation_status: int | None,
     download: Download | None,
-    storage: Storage,
 ) -> CaptureResult:
     """Capture the current page or download without navigating."""
     downloaded: DownloadedBody | None = None
     if download is not None:
         downloaded = await _save_download(download)
 
-    html_content = rendered_html = screenshot = None
+    html = screenshot = None
     if navigation_status is not None and download is None:
-        html_content, rendered_html, screenshot = await _capture_artifacts(
-            page, final_url, storage
-        )
+        html, screenshot = await _capture_artifacts(page)
 
     return CaptureResult(
         http_status=navigation_status,
         error=None,
         final_url=final_url,
-        html_content=html_content,
-        rendered_html=rendered_html,
+        html=html,
         screenshot=screenshot,
         download=downloaded,
     )
 
 
-async def capture_driven(
-    page: Page, url: str, drive: DriveCallback, storage: Storage
-) -> CaptureResult:
+async def capture_driven(page: Page, url: str, drive: DriveCallback) -> CaptureResult:
     """Run *drive*, then capture the resulting HTTP(S) page or download."""
     async with _PageObserver(page) as observer:
         try:
@@ -327,7 +288,7 @@ async def capture_driven(
             )
 
         return await capture_current(
-            page, final_url, observer.navigation_status, download, storage
+            page, final_url, observer.navigation_status, download
         )
 
 

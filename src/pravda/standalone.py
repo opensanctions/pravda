@@ -6,7 +6,7 @@ from pathlib import Path
 
 from unmhtml import Document, Resource, to_standalone_html
 
-from pravda.storage import STORAGE_WRITE_TIMEOUT_S, Storage, cas_name
+from pravda.storage import Storage
 
 
 async def capture_standalone_html(
@@ -30,6 +30,4 @@ async def capture_standalone_html(
 
     document = Document(html=html, resources=resources, base_url=final_url)
     standalone = await asyncio.to_thread(to_standalone_html, document)
-    data = standalone.encode()
-    async with asyncio.timeout(STORAGE_WRITE_TIMEOUT_S):
-        return await storage.put_blob(cas_name(data, "html"), data, final_url)
+    return await storage.put_artifact(standalone.encode(), "html", final_url)

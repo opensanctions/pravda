@@ -12,7 +12,7 @@ from pravda.storage import Storage
 from tests.helpers import fulfill_html, slow_pipe_file
 
 
-async def _record_example(browser, storage: Storage, tmp_path):
+async def _record_example(browser, tmp_path):
     http_archive_path = tmp_path / "record.zip"
     context = await browser.new_context(
         record_har_path=str(http_archive_path),
@@ -20,14 +20,14 @@ async def _record_example(browser, storage: Storage, tmp_path):
     )
     page = await context.new_page()
     await page.route("https://example.com", fulfill_html)
-    result = await capture_page(page, "https://example.com", storage)
+    result = await capture_page(page, "https://example.com")
     return context, result, http_archive_path
 
 
 @pytest.mark.asyncio
 async def test_context_close_failure_discards_evidence(browser, storage, tmp_path):
     """An unfinalized recording context invalidates all captured evidence."""
-    context, captured, path = await _record_example(browser, storage, tmp_path)
+    context, captured, path = await _record_example(browser, tmp_path)
 
     async def failing_close():
         raise OSError("context teardown lost the connection")
@@ -45,7 +45,7 @@ async def test_har_processing_timeout_propagates(
     browser, storage: Storage, tmp_path, monkeypatch
 ):
     """A HAR storage timeout fails the operation rather than persisting a fallback."""
-    context, captured, path = await _record_example(browser, storage, tmp_path)
+    context, captured, path = await _record_example(browser, tmp_path)
     monkeypatch.setattr(pravda_module, "HAR_PROCESSING_TIMEOUT_S", 0.01)
 
     monkeypatch.setattr(storage.fs, "_pipe_file", slow_pipe_file)

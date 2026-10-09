@@ -1,13 +1,12 @@
 """Store the bodies from a Playwright HAR archive."""
 
-import asyncio
 import json
 import logging
 import zipfile
 from pathlib import Path
 
 from pravda.capture import DownloadedBody
-from pravda.storage import STORAGE_WRITE_TIMEOUT_S, Storage, cas_name
+from pravda.storage import Storage
 
 logger = logging.getLogger(__name__)
 
@@ -35,15 +34,6 @@ async def capture_http_archive(
     return manifest
 
 
-async def _store_body(download: DownloadedBody, url: str, storage: Storage) -> str:
-    """Store a downloaded body within the storage-write deadline."""
-    ext = Path(download.suggested_filename).suffix
-    name = cas_name(download.data, ext)
-    async with asyncio.timeout(STORAGE_WRITE_TIMEOUT_S):
-        await storage.put_blob(name, download.data, url)
-    return name
-
-
 async def _inject_download(
     manifest: dict, download: DownloadedBody, url: str, storage: Storage
 ) -> None:
@@ -54,7 +44,7 @@ async def _inject_download(
         content = entry["response"]["content"]
         if content.get("_file"):
             continue
-        name = await _store_body(download, url, storage)
-        content["_file"] = name
+        ext = Path(download.suggested_filename).suffix
+        content["_file"] = await storage.put_artifact(download.data, ext, url)
         content["size"] = len(download.data)
         return

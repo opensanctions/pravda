@@ -53,6 +53,16 @@ class _CaptureFailure(Exception):
     """A browser failure that should be persisted without evidence."""
 
 
+@dataclass
+class StoredArtifacts:
+    """Stored artifact names and manifest produced by finalization."""
+
+    rendered_html: str | None = None
+    screenshot: str | None = None
+    standalone_html: str | None = None
+    http_archive: dict | None = None
+
+
 async def _connect(playwright, browser_ws_url: str) -> Browser:
     """Connect to the remote browser server."""
     return await playwright.chromium.connect(
@@ -68,8 +78,8 @@ async def _finalize_capture(
     result: CaptureResult,
     http_archive_path: Path,
     storage: Storage,
-) -> tuple[CaptureResult, dict | None]:
-    """Close the context and process its HAR as an atomic evidence operation."""
+) -> StoredArtifacts:
+    """Close the context and store the captured evidence atomically."""
     try:
         async with asyncio.timeout(CONTEXT_CLOSE_TIMEOUT_S):
             await context.close()
@@ -80,10 +90,21 @@ async def _finalize_capture(
         raise _CaptureFailure(f"browser context close failed: {error}") from error
 
     if result.http_status is None:
-        return result, None
+        return StoredArtifacts()
     if not http_archive_path.exists():
         raise _CaptureFailure(
             "browser context closed without producing an HTTP archive"
+        )
+
+    rendered_html = None
+    if result.html is not None:
+        rendered_html = await storage.put_artifact(
+            result.html.encode(), "html", result.final_url
+        )
+    screenshot = None
+    if result.screenshot is not None:
+        screenshot = await storage.put_artifact(
+            result.screenshot, "png", result.final_url
         )
 
     async with asyncio.timeout(HAR_PROCESSING_TIMEOUT_S):
@@ -93,13 +114,14 @@ async def _finalize_capture(
     if http_archive is None:
         raise _CaptureFailure("browser context produced an invalid HTTP archive")
 
-    if result.html_content is not None:
+    standalone_html = None
+    if result.html is not None:
         try:
             async with asyncio.timeout(STANDALONE_TIMEOUT_S):
-                result.standalone_html = await capture_standalone_html(
+                standalone_html = await capture_standalone_html(
                     http_archive_path,
                     http_archive,
-                    result.html_content,
+                    result.html,
                     result.final_url,
                     storage,
                 )
@@ -109,7 +131,12 @@ async def _finalize_capture(
                 result.final_url,
                 error,
             )
-    return result, http_archive
+    return StoredArtifacts(
+        rendered_html=rendered_html,
+        screenshot=screenshot,
+        standalone_html=standalone_html,
+        http_archive=http_archive,
+    )
 
 
 async def _cleanup(browser: Browser | None, playwright) -> None:
@@ -133,7 +160,7 @@ async def _cleanup(browser: Browser | None, playwright) -> None:
 async def _persist_snapshot(
     url: str,
     result: CaptureResult,
-    http_archive: dict | None,
+    artifacts: StoredArtifacts,
     sessionmaker: async_sessionmaker,
     storage: Storage,
 ) -> Snapshot:
@@ -143,10 +170,10 @@ async def _persist_snapshot(
         final_url=result.final_url,
         http_status=result.http_status,
         error=result.error,
-        rendered_html=result.rendered_html,
-        screenshot=result.screenshot,
-        standalone_html=result.standalone_html,
-        http_archive=http_archive,
+        rendered_html=artifacts.rendered_html,
+        screenshot=artifacts.screenshot,
+        standalone_html=artifacts.standalone_html,
+        http_archive=artifacts.http_archive,
     )
     async with asyncio.timeout(PERSIST_TIMEOUT_S):
         async with sessionmaker() as session:
@@ -170,7 +197,7 @@ async def _capture_to_result(
     browser_ws_url: str,
     http_archive_dir: Path,
     storage: Storage,
-) -> tuple[CaptureResult, dict | None]:
+) -> tuple[CaptureResult, StoredArtifacts]:
     """Capture and finalize one atomic evidence bundle."""
     playwright = None
     browser: Browser | None = None
@@ -189,13 +216,14 @@ async def _capture_to_result(
                 page = await context.new_page()
 
                 if drive is None:
-                    result = await capture_page(page, url, storage)
+                    result = await capture_page(page, url)
                 else:
-                    result = await capture_driven(page, url, drive, storage)
+                    result = await capture_driven(page, url, drive)
 
-                return await _finalize_capture(
+                artifacts = await _finalize_capture(
                     context, result, http_archive_path, storage
                 )
+                return result, artifacts
         except asyncio.TimeoutError:
             # Only the outer breaker is a persisted browser failure. Inner
             # storage and HAR-processing timeouts remain operational errors.
@@ -222,7 +250,7 @@ async def _capture(
     http_archive_dir = Path(tempfile.mkdtemp())
     try:
         try:
-            result, http_archive = await _capture_to_result(
+            result, artifacts = await _capture_to_result(
                 url,
                 drive=drive,
                 browser_ws_url=browser_ws_url,
@@ -232,11 +260,11 @@ async def _capture(
         except (DriveTimeoutError, PlaywrightError, _CaptureFailure) as error:
             logger.error("Capture failed for %s: %s", url, error)
             result = CaptureResult(error=str(error))
-            http_archive = None
+            artifacts = StoredArtifacts()
     finally:
         shutil.rmtree(http_archive_dir, ignore_errors=True)
 
-    return await _persist_snapshot(url, result, http_archive, sessionmaker, storage)
+    return await _persist_snapshot(url, result, artifacts, sessionmaker, storage)
 
 
 class Pravda:
