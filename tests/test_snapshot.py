@@ -130,6 +130,81 @@ async def test_capture_page_dom_capture_timeout_skips_content(
 
 
 @pytest.mark.asyncio
+async def test_capture_page_waits_for_dom_settle(
+    page: Page, storage: Storage, tmp_path: Path
+):
+    """Late DOM re-renders land in rendered_html instead of the initial state."""
+    await page.route(
+        "https://example.com",
+        lambda route: route.fulfill(
+            body=(FIXTURES / "hydrating.html").read_text(),
+            headers={"content-type": "text/html"},
+        ),
+    )
+
+    result = await capture_page(page, "https://example.com", storage)
+
+    assert result.http_status == 200
+    blob = tmp_path / "example.com" / result.rendered_html
+    html = blob.read_text()
+    assert "final" in html
+    assert ">loading<" not in html
+    assert ">intermediate<" not in html
+    assert ">still-hydrating<" not in html
+
+
+@pytest.mark.asyncio
+async def test_capture_page_never_settling_dom_drops_html(
+    page: Page, storage: Storage, monkeypatch
+):
+    """A DOM that never settles hits the capture budget and drops only html."""
+    await page.route(
+        "https://example.com",
+        lambda route: route.fulfill(
+            body=(FIXTURES / "ticker.html").read_text(),
+            headers={"content-type": "text/html"},
+        ),
+    )
+    monkeypatch.setattr(capture_module, "DOM_CAPTURE_TIMEOUT_S", 1.5)
+
+    result = await capture_page(page, "https://example.com", storage)
+
+    assert result.http_status == 200
+    assert result.error is None
+    assert result.rendered_html is None
+    assert result.screenshot is not None
+
+
+@pytest.mark.asyncio
+async def test_capture_page_hanging_font_drops_screenshot(
+    page: Page, storage: Storage, monkeypatch
+):
+    """A font that never loads stalls only the screenshot, not the html."""
+    await page.route(
+        "https://example.com/hanging-font.woff2",
+        lambda route: asyncio.Event().wait(),  # never resolves
+    )
+    await page.route(
+        "https://example.com",
+        lambda route: route.fulfill(
+            body=(FIXTURES / "font-stall.html").read_text(),
+            headers={"content-type": "text/html"},
+        ),
+    )
+    monkeypatch.setattr(capture_module, "LOAD_TIMEOUT_MS", 2000)
+    monkeypatch.setattr(capture_module, "CAPTURE_TIMEOUT_MS", 1500)
+
+    result = await capture_page(page, "https://example.com", storage)
+
+    assert result.http_status == 200
+    # The hanging font keeps the load event from firing, and Playwright's
+    # screenshot stalls on document.fonts.ready: both degrade gracefully.
+    assert result.error is not None
+    assert result.rendered_html is not None
+    assert result.screenshot is None
+
+
+@pytest.mark.asyncio
 async def test_capture_page_storage_write_timeout_propagates(
     page: Page, storage: Storage, monkeypatch
 ):

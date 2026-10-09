@@ -18,6 +18,7 @@ NAV_TIMEOUT_MS = 10_000
 LOAD_TIMEOUT_MS = 30_000
 CAPTURE_TIMEOUT_MS = 15_000
 DOM_CAPTURE_TIMEOUT_S = 10
+DOM_SETTLE_QUIET_MS = 500
 DOWNLOAD_TIMEOUT_S = 15
 DRIVE_TIMEOUT_S = 60
 
@@ -183,11 +184,32 @@ async def _store_blob(data: bytes, extension: str, url: str, storage: Storage) -
 async def _capture_artifacts(
     page: Page, url: str, storage: Storage
 ) -> tuple[str | None, str | None]:
-    """Stop loading and capture rendered HTML and screenshot."""
+    """Wait for the DOM to settle, then capture its artifacts."""
     try:
         async with asyncio.timeout(DOM_CAPTURE_TIMEOUT_S):
-            cdp = await page.context.new_cdp_session(page)
-            await cdp.send("Page.stopLoading", {})
+            # Attribute changes re-arm the quiet timer alongside structural ones:
+            # late framework re-renders toggle layout classes long after load.
+            await page.evaluate(
+                """
+                (quietMs) => new Promise((resolve) => {
+                    let timer = setTimeout(settled, quietMs);
+                    const observer = new MutationObserver(() => {
+                        clearTimeout(timer);
+                        timer = setTimeout(settled, quietMs);
+                    });
+                    function settled() {
+                        observer.disconnect();
+                        resolve();
+                    }
+                    observer.observe(document, {
+                        childList: true,
+                        subtree: true,
+                        attributes: true,
+                    });
+                })
+                """,
+                DOM_SETTLE_QUIET_MS,
+            )
             html = await page.content()
     except (asyncio.TimeoutError, PlaywrightTimeout):
         logger.warning("Timeout capturing DOM content for %s", url)

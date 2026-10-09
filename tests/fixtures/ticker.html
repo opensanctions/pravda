@@ -1,0 +1,16 @@
+<!doctype html>
+<html>
+  <head>
+    <title>Never-settling ticker page</title>
+  </head>
+  <body>
+    <main id="app">ticker</main>
+    <script>
+      setInterval(() => {
+        document
+          .getElementById("app")
+          .setAttribute("data-tick", String(Date.now()));
+      }, 100);
+    </script>
+  </body>
+</html>

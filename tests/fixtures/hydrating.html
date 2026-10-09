@@ -1,0 +1,21 @@
+<!doctype html>
+<html>
+  <head>
+    <title>Hydrating page</title>
+  </head>
+  <body>
+    <main id="app">loading</main>
+    <script>
+      setTimeout(() => {
+        document.getElementById("app").textContent = "intermediate";
+      }, 300);
+      setTimeout(() => {
+        document.getElementById("app").textContent = "still-hydrating";
+      }, 600);
+      setTimeout(() => {
+        document.body.className = "twelve-column-grid";
+        document.getElementById("app").textContent = "final";
+      }, 900);
+    </script>
+  </body>
+</html>
