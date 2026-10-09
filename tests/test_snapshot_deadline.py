@@ -1,17 +1,16 @@
 """Wall-clock bounds for ``Pravda.snapshot``."""
 
 import asyncio
+import os
 import time
+from dataclasses import replace
 
 import pytest
 from playwright.async_api import Browser, BrowserContext
 from sqlalchemy.ext.asyncio import AsyncSession
 
-import pravda.capture as capture_module
-import pravda.pravda as pravda_module
-import pravda.storage as storage_module
-from pravda import Pravda
-from tests.helpers import fulfill_html, slow_pipe_file
+from pravda import Pravda, PravdaConfig, Timeouts
+from tests.helpers import fulfill_html
 
 
 async def _drive_example(page, url):
@@ -19,11 +18,19 @@ async def _drive_example(page, url):
     await page.goto(url, wait_until="load")
 
 
+def _pravda(sessionmaker, tmp_path, **budgets: float) -> Pravda:
+    """A client with the given budget fields shrunk from the defaults."""
+    config = PravdaConfig(
+        browser_ws_url=os.environ["PRAVDA_TEST_BROWSER_WS_URL"],
+        storage_base_path=str(tmp_path),
+        timeouts=replace(Timeouts(), **budgets),
+    )
+    return Pravda(config, sessionmaker)
+
+
 @pytest.mark.asyncio
-async def test_snapshot_drive_timeout_persists_failed_attempt(
-    pravda: Pravda, monkeypatch
-):
-    monkeypatch.setattr(capture_module, "DRIVE_TIMEOUT_S", 0.2)
+async def test_snapshot_drive_timeout_persists_failed_attempt(sessionmaker, tmp_path):
+    pravda = _pravda(sessionmaker, tmp_path, drive_milliseconds=200)
 
     async def drive(page, url):
         await asyncio.sleep(5)
@@ -39,9 +46,9 @@ async def test_snapshot_drive_timeout_persists_failed_attempt(
 
 @pytest.mark.asyncio
 async def test_snapshot_total_timeout_persists_failed_attempt(
-    pravda: Pravda, monkeypatch
+    sessionmaker, tmp_path, monkeypatch
 ):
-    monkeypatch.setattr(pravda_module, "SNAPSHOT_TIMEOUT_S", 0.2)
+    pravda = _pravda(sessionmaker, tmp_path, snapshot_milliseconds=200)
 
     async def slow_new_context(self, **kwargs):
         await asyncio.sleep(5)
@@ -57,8 +64,10 @@ async def test_snapshot_total_timeout_persists_failed_attempt(
 
 
 @pytest.mark.asyncio
-async def test_context_close_timeout_discards_evidence(pravda: Pravda, monkeypatch):
-    monkeypatch.setattr(pravda_module, "CONTEXT_CLOSE_TIMEOUT_S", 0.01)
+async def test_context_close_timeout_discards_evidence(
+    sessionmaker, tmp_path, monkeypatch
+):
+    pravda = _pravda(sessionmaker, tmp_path, context_close_milliseconds=10)
 
     async def slow_close(self, **kwargs):
         await asyncio.sleep(1)
@@ -75,22 +84,10 @@ async def test_context_close_timeout_discards_evidence(pravda: Pravda, monkeypat
 
 
 @pytest.mark.asyncio
-async def test_storage_timeout_is_not_mistaken_for_snapshot_timeout(
-    pravda: Pravda, monkeypatch
+async def test_snapshot_persistence_timeout_propagates(
+    sessionmaker, tmp_path, monkeypatch
 ):
-    monkeypatch.setattr(storage_module, "STORAGE_WRITE_TIMEOUT_S", 0.01)
-
-    monkeypatch.setattr(pravda._storage.fs, "_pipe_file", slow_pipe_file)
-
-    with pytest.raises(asyncio.TimeoutError):
-        await pravda.snapshot("https://example.com", drive=_drive_example)
-
-    assert await pravda.snapshots("https://example.com") == []
-
-
-@pytest.mark.asyncio
-async def test_snapshot_persistence_timeout_propagates(pravda: Pravda, monkeypatch):
-    monkeypatch.setattr(pravda_module, "PERSIST_TIMEOUT_S", 0.2)
+    pravda = _pravda(sessionmaker, tmp_path, persist_milliseconds=200)
 
     async def hanging_commit(self):
         await asyncio.sleep(5)
@@ -105,12 +102,13 @@ async def test_snapshot_persistence_timeout_propagates(pravda: Pravda, monkeypat
 
 @pytest.mark.asyncio
 async def test_snapshot_cleanup_is_bounded_and_keeps_outcome(
-    pravda: Pravda, monkeypatch
+    sessionmaker, tmp_path, monkeypatch
 ):
+    pravda = _pravda(sessionmaker, tmp_path, cleanup_milliseconds=200)
+
     async def slow_close(self, **kwargs):
         await asyncio.sleep(5)
 
-    monkeypatch.setattr(pravda_module, "CLEANUP_TIMEOUT_S", 0.2)
     monkeypatch.setattr(Browser, "close", slow_close)
 
     start = time.monotonic()

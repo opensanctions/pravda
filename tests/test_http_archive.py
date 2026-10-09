@@ -1,17 +1,14 @@
 """Downloaded response bodies are folded back into the HAR manifest."""
 
-import asyncio
 import json
 import zipfile
 from pathlib import Path
 
 import pytest
 
-import pravda.storage as storage_module
 from pravda.capture import DownloadedBody
 from pravda.http_archive import capture_http_archive
 from pravda.storage import Storage
-from tests.helpers import slow_pipe_file
 
 PAGE_URL = "https://example.com/doc.pdf"
 
@@ -76,8 +73,9 @@ async def test_download_body_folded_into_har(storage: Storage):
 
 
 @pytest.mark.asyncio
-async def test_download_body_storage_timeout_propagates(storage: Storage, monkeypatch):
-    """A timed-out download write fails HAR processing."""
+async def test_download_body_storage_failure_propagates(tmp_path, monkeypatch):
+    """A failed download write fails HAR processing."""
+    storage = Storage.from_url(str(tmp_path))
     pdf_bytes = b"%PDF-1.7 real-ish bytes\n%EOF"
     manifest = {
         "log": {
@@ -97,11 +95,12 @@ async def test_download_body_storage_timeout_propagates(storage: Storage, monkey
     with zipfile.ZipFile(zip_path, "w") as archive:
         archive.writestr("har.har", json.dumps(manifest))
 
-    monkeypatch.setattr(storage_module, "STORAGE_WRITE_TIMEOUT_S", 0.01)
+    async def fail_pipe_file(path, value, **kwargs):
+        raise OSError("storage backend down")
 
-    monkeypatch.setattr(storage.fs, "_pipe_file", slow_pipe_file)
+    monkeypatch.setattr(storage.fs, "_pipe_file", fail_pipe_file)
 
-    with pytest.raises(asyncio.TimeoutError):
+    with pytest.raises(OSError, match="storage backend down"):
         await capture_http_archive(
             zip_path,
             PAGE_URL,

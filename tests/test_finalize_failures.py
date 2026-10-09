@@ -1,12 +1,13 @@
 """Atomic failure semantics for HAR finalization."""
 
 import asyncio
+from dataclasses import replace
 
 import pytest
 from playwright.async_api import Error as PlaywrightError
 
 import pravda.pravda as pravda_module
-from pravda import Pravda
+from pravda import Pravda, Timeouts
 from pravda.capture import capture_page
 from pravda.storage import Storage
 from tests.helpers import fulfill_html, slow_pipe_file
@@ -37,7 +38,9 @@ async def test_context_close_failure_discards_evidence(browser, storage, tmp_pat
         pravda_module._CaptureFailure,
         match="browser context close failed: context teardown lost the connection",
     ):
-        await pravda_module._finalize_capture(context, captured, path, storage)
+        await pravda_module._finalize_capture(
+            context, captured, path, storage, Timeouts()
+        )
 
 
 @pytest.mark.asyncio
@@ -46,12 +49,14 @@ async def test_har_processing_timeout_propagates(
 ):
     """A HAR storage timeout fails the operation rather than persisting a fallback."""
     context, captured, path = await _record_example(browser, tmp_path)
-    monkeypatch.setattr(pravda_module, "HAR_PROCESSING_TIMEOUT_S", 0.01)
 
     monkeypatch.setattr(storage.fs, "_pipe_file", slow_pipe_file)
 
+    timeouts = replace(Timeouts(), har_processing_milliseconds=10)
     with pytest.raises(asyncio.TimeoutError):
-        await pravda_module._finalize_capture(context, captured, path, storage)
+        await pravda_module._finalize_capture(
+            context, captured, path, storage, timeouts
+        )
 
 
 @pytest.mark.asyncio

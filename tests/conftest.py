@@ -8,17 +8,24 @@ from playwright.async_api import async_playwright
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import AsyncAdaptedQueuePool
 
-from pravda import Pravda, PravdaConfig
+from pravda import Pravda, PravdaConfig, Timeouts
 from pravda.db import Base
 from pravda.storage import Storage
 
 
 @pytest.fixture()
-def pravda_config(tmp_path) -> PravdaConfig:
+def timeouts() -> Timeouts:
+    """Default capture budgets; tests override fields when they need to."""
+    return Timeouts()
+
+
+@pytest.fixture()
+def pravda_config(tmp_path, timeouts) -> PravdaConfig:
     """Configuration for a client with an isolated artifact store."""
     return PravdaConfig(
         browser_ws_url=os.environ["PRAVDA_TEST_BROWSER_WS_URL"],
         storage_base_path=str(tmp_path),
+        timeouts=timeouts,
     )
 
 

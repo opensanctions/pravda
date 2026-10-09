@@ -19,13 +19,19 @@ an application-owned async session factory::
     history = await pravda.snapshots(url)
 
 Applications own the database engine and dispose it on shutdown.
+
+Capture budgets default to ``Timeouts()``; override individual fields with
+``dataclasses.replace`` when targets, storage, or databases are slower than
+the defaults assume.
 """
 
-from pravda.pravda import Pravda, PravdaConfig
+from pravda.config import PravdaConfig, Timeouts
+from pravda.pravda import Pravda
 from pravda.snapshots import Snapshot
 
 __all__ = [
     "Pravda",
     "PravdaConfig",
     "Snapshot",
+    "Timeouts",
 ]

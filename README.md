@@ -59,6 +59,10 @@ application-owned `async_sessionmaker` passed to `Pravda`:
 - `browser_ws_url` — remote Playwright WebSocket URL.
 - `storage_base_path` — fsspec storage URL, such as `./data`, `s3://bucket`,
   or `gs://bucket`.
+- `timeouts` — a frozen `Timeouts` of wall-clock budgets for every pipeline
+  stage, defaulting to sensible values; see its docstring for what each
+  budget does on expiry. Override individual fields with
+  `dataclasses.replace(Timeouts(), load_milliseconds=60_000)`.
 
 The session factory must use `expire_on_commit=False`, because Pravda reads
 persisted snapshots after commit.

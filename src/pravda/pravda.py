@@ -20,6 +20,7 @@ from pravda.capture import (
     capture_page,
     is_http_url,
 )
+from pravda.config import PravdaConfig, Timeouts
 from pravda.db import SnapshotRecord
 from pravda.http_archive import capture_http_archive
 from pravda.snapshots import Snapshot, from_record
@@ -32,21 +33,6 @@ logger = logging.getLogger(__name__)
 # failure invalidates the result; cleanup is best-effort. Storage, persistence,
 # non-Playwright callback failures, and cancellation propagate. Standalone-HTML
 # derivation failures drop only that artifact.
-SNAPSHOT_TIMEOUT_S = 240
-CONNECT_TIMEOUT_MS = 10_000
-CONTEXT_CLOSE_TIMEOUT_S = 30
-HAR_PROCESSING_TIMEOUT_S = 20
-STANDALONE_TIMEOUT_S = 20
-CLEANUP_TIMEOUT_S = 5
-PERSIST_TIMEOUT_S = 15
-
-
-@dataclass(frozen=True)
-class PravdaConfig:
-    """Runtime configuration for a :class:`Pravda` instance."""
-
-    browser_ws_url: str
-    storage_base_path: str
 
 
 class _CaptureFailure(Exception):
@@ -63,13 +49,13 @@ class StoredArtifacts:
     http_archive: dict | None = None
 
 
-async def _connect(playwright, browser_ws_url: str) -> Browser:
+async def _connect(playwright, browser_ws_url: str, timeouts: Timeouts) -> Browser:
     """Connect to the remote browser server."""
     return await playwright.chromium.connect(
         browser_ws_url,
         # connect's timeout defaults to 0 (no timeout). Bound the handshake so
         # a dead server fails fast as a PlaywrightError instead of hanging.
-        timeout=CONNECT_TIMEOUT_MS,
+        timeout=timeouts.connect_milliseconds,
     )
 
 
@@ -78,13 +64,17 @@ async def _finalize_capture(
     result: CaptureResult,
     http_archive_path: Path,
     storage: Storage,
+    timeouts: Timeouts,
 ) -> StoredArtifacts:
     """Close the context and store the captured evidence atomically."""
     try:
-        async with asyncio.timeout(CONTEXT_CLOSE_TIMEOUT_S):
+        async with asyncio.timeout(timeouts.context_close_milliseconds / 1000):
             await context.close()
     except asyncio.TimeoutError as error:
-        message = f"browser context close exceeded {CONTEXT_CLOSE_TIMEOUT_S}s budget"
+        message = (
+            f"browser context close exceeded "
+            f"{timeouts.context_close_milliseconds:g}ms budget"
+        )
         raise _CaptureFailure(message) from error
     except Exception as error:
         raise _CaptureFailure(f"browser context close failed: {error}") from error
@@ -107,7 +97,7 @@ async def _finalize_capture(
             result.screenshot, "png", result.final_url
         )
 
-    async with asyncio.timeout(HAR_PROCESSING_TIMEOUT_S):
+    async with asyncio.timeout(timeouts.har_processing_milliseconds / 1000):
         http_archive = await capture_http_archive(
             http_archive_path, result.final_url, storage, download=result.download
         )
@@ -117,7 +107,7 @@ async def _finalize_capture(
     standalone_html = None
     if result.html is not None:
         try:
-            async with asyncio.timeout(STANDALONE_TIMEOUT_S):
+            async with asyncio.timeout(timeouts.standalone_milliseconds / 1000):
                 standalone_html = await capture_standalone_html(
                     http_archive_path,
                     http_archive,
@@ -139,7 +129,7 @@ async def _finalize_capture(
     )
 
 
-async def _cleanup(browser: Browser | None, playwright) -> None:
+async def _cleanup(browser: Browser | None, playwright, timeouts: Timeouts) -> None:
     """Best-effort cleanup that never changes the capture outcome."""
     operations = []
     if browser is not None:
@@ -149,10 +139,12 @@ async def _cleanup(browser: Browser | None, playwright) -> None:
 
     for name, operation in operations:
         try:
-            async with asyncio.timeout(CLEANUP_TIMEOUT_S):
+            async with asyncio.timeout(timeouts.cleanup_milliseconds / 1000):
                 await operation()
         except asyncio.TimeoutError:
-            logger.warning("%s exceeded %ss budget", name, CLEANUP_TIMEOUT_S)
+            logger.warning(
+                "%s exceeded %gms budget", name, timeouts.cleanup_milliseconds
+            )
         except Exception as error:
             logger.warning("%s failed: %s", name, error)
 
@@ -163,6 +155,7 @@ async def _persist_snapshot(
     artifacts: StoredArtifacts,
     sessionmaker: async_sessionmaker,
     storage: Storage,
+    timeouts: Timeouts,
 ) -> Snapshot:
     """Commit captured evidence and return its public value."""
     record = SnapshotRecord(
@@ -175,7 +168,7 @@ async def _persist_snapshot(
         standalone_html=artifacts.standalone_html,
         http_archive=artifacts.http_archive,
     )
-    async with asyncio.timeout(PERSIST_TIMEOUT_S):
+    async with asyncio.timeout(timeouts.persist_milliseconds / 1000):
         async with sessionmaker() as session:
             session.add(record)
             await session.commit()
@@ -197,16 +190,17 @@ async def _capture_to_result(
     browser_ws_url: str,
     http_archive_dir: Path,
     storage: Storage,
+    timeouts: Timeouts,
 ) -> tuple[CaptureResult, StoredArtifacts]:
     """Capture and finalize one atomic evidence bundle."""
     playwright = None
     browser: Browser | None = None
-    deadline = asyncio.timeout(SNAPSHOT_TIMEOUT_S)
+    deadline = asyncio.timeout(timeouts.snapshot_milliseconds / 1000)
     try:
         try:
             async with deadline:
                 playwright = await async_playwright().start()
-                browser = await _connect(playwright, browser_ws_url)
+                browser = await _connect(playwright, browser_ws_url, timeouts)
 
                 http_archive_path = http_archive_dir / "record.zip"
                 context = await browser.new_context(
@@ -216,12 +210,12 @@ async def _capture_to_result(
                 page = await context.new_page()
 
                 if drive is None:
-                    result = await capture_page(page, url)
+                    result = await capture_page(page, url, timeouts)
                 else:
-                    result = await capture_driven(page, url, drive)
+                    result = await capture_driven(page, url, drive, timeouts)
 
                 artifacts = await _finalize_capture(
-                    context, result, http_archive_path, storage
+                    context, result, http_archive_path, storage, timeouts
                 )
                 return result, artifacts
         except asyncio.TimeoutError:
@@ -230,10 +224,11 @@ async def _capture_to_result(
             if not deadline.expired():
                 raise
             raise _CaptureFailure(
-                f"snapshot exceeded {SNAPSHOT_TIMEOUT_S}s wall-clock budget"
+                f"snapshot exceeded {timeouts.snapshot_milliseconds:g}ms"
+                " wall-clock budget"
             )
     finally:
-        await _cleanup(browser, playwright)
+        await _cleanup(browser, playwright, timeouts)
 
 
 async def _capture(
@@ -243,6 +238,7 @@ async def _capture(
     browser_ws_url: str,
     sessionmaker: async_sessionmaker,
     storage: Storage,
+    timeouts: Timeouts,
 ) -> Snapshot:
     """Capture *url* and persist the result."""
     logger.info("Capturing %s", url)
@@ -256,6 +252,7 @@ async def _capture(
                 browser_ws_url=browser_ws_url,
                 http_archive_dir=http_archive_dir,
                 storage=storage,
+                timeouts=timeouts,
             )
         except (DriveTimeoutError, PlaywrightError, _CaptureFailure) as error:
             logger.error("Capture failed for %s: %s", url, error)
@@ -264,7 +261,9 @@ async def _capture(
     finally:
         shutil.rmtree(http_archive_dir, ignore_errors=True)
 
-    return await _persist_snapshot(url, result, artifacts, sessionmaker, storage)
+    return await _persist_snapshot(
+        url, result, artifacts, sessionmaker, storage, timeouts
+    )
 
 
 class Pravda:
@@ -282,6 +281,7 @@ class Pravda:
         sessionmaker: async_sessionmaker[AsyncSession],
     ) -> None:
         self._sessionmaker = sessionmaker
+        self._timeouts = config.timeouts
         self._storage = Storage.from_url(config.storage_base_path)
         self._browser_ws_url = config.browser_ws_url
 
@@ -308,6 +308,7 @@ class Pravda:
             browser_ws_url=self._browser_ws_url,
             sessionmaker=self._sessionmaker,
             storage=self._storage,
+            timeouts=self._timeouts,
         )
 
     async def snapshots(self, url: str) -> list[Snapshot]:

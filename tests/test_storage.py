@@ -1,11 +1,8 @@
-import asyncio
 from pathlib import Path
 
 import pytest
 
-import pravda.storage as storage_module
 from pravda.storage import Storage, cas_name, content_hash, normalize_hostname
-from tests.helpers import slow_pipe_file
 
 
 @pytest.mark.asyncio
@@ -42,16 +39,6 @@ async def test_put_artifact_names_and_stores_content_addressed(storage: Storage)
     assert name == cas_name(data, "html")
     path = Path(storage.content_prefix(url)) / name
     assert path.read_bytes() == data
-
-
-@pytest.mark.asyncio
-async def test_put_artifact_write_timeout_propagates(storage: Storage, monkeypatch):
-    """An artifact write exceeding its budget propagates the timeout."""
-    monkeypatch.setattr(storage_module, "STORAGE_WRITE_TIMEOUT_S", 0.01)
-    monkeypatch.setattr(storage.fs, "_pipe_file", slow_pipe_file)
-
-    with pytest.raises(asyncio.TimeoutError):
-        await storage.put_artifact(b"data", "html", "https://example.com")
 
 
 def test_content_prefix_joins_base_and_hostname(storage: Storage):

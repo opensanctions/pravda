@@ -1,11 +1,12 @@
 import asyncio
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 from playwright.async_api import Browser, Page
 from playwright.async_api import TimeoutError as PlaywrightTimeout
 
-import pravda.capture as capture_module
+from pravda import Timeouts
 from pravda.capture import _save_download, capture_page
 from tests.helpers import FIXTURES, fulfill_html, fulfill_pdf
 
@@ -73,7 +74,7 @@ async def test_capture_page_goto_timeout_skips_captures(page: Page):
 
 
 @pytest.mark.asyncio
-async def test_http_commit_captured_when_load_times_out(page: Page, monkeypatch):
+async def test_http_commit_captured_when_load_times_out(page: Page):
     """HTTP status comes from commit even when load times out."""
     # Hang the image so `load` never fires, but serve the HTML fine.
     await page.route(
@@ -88,8 +89,8 @@ async def test_http_commit_captured_when_load_times_out(page: Page, monkeypatch)
         ),
     )
 
-    monkeypatch.setattr(capture_module, "LOAD_TIMEOUT_MS", 2000)
-    result = await capture_page(page, "https://slow.example.com")
+    timeouts = replace(Timeouts(), load_milliseconds=2000)
+    result = await capture_page(page, "https://slow.example.com", timeouts=timeouts)
 
     assert result.http_status == 200
     assert result.final_url == "https://slow.example.com/"
@@ -101,21 +102,20 @@ async def test_http_commit_captured_when_load_times_out(page: Page, monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_capture_page_dom_capture_timeout_skips_content(page: Page, monkeypatch):
+async def test_capture_page_dom_capture_timeout_skips_content(page: Page):
     """A DOM read exceeding its budget drops html but keeps the screenshot."""
     fixture_html = (FIXTURES / "example.html").read_text()
     await page.route("https://example.com", fulfill_html)
 
     # Stall page.content past the DOM-capture budget.
-    monkeypatch.setattr(capture_module, "DOM_CAPTURE_TIMEOUT_S", 0.2)
-
     async def slow_content():
         await asyncio.sleep(5)
         return fixture_html
 
     page.content = slow_content
 
-    result = await capture_page(page, "https://example.com")
+    timeouts = replace(Timeouts(), dom_capture_milliseconds=200)
+    result = await capture_page(page, "https://example.com", timeouts=timeouts)
 
     assert result.http_status == 200
     assert result.error is None
@@ -144,7 +144,7 @@ async def test_capture_page_waits_for_dom_settle(page: Page):
 
 
 @pytest.mark.asyncio
-async def test_capture_page_never_settling_dom_drops_html(page: Page, monkeypatch):
+async def test_capture_page_never_settling_dom_drops_html(page: Page):
     """A DOM that never settles hits the capture budget and drops only html."""
     await page.route(
         "https://example.com",
@@ -153,9 +153,8 @@ async def test_capture_page_never_settling_dom_drops_html(page: Page, monkeypatc
             headers={"content-type": "text/html"},
         ),
     )
-    monkeypatch.setattr(capture_module, "DOM_CAPTURE_TIMEOUT_S", 1.5)
-
-    result = await capture_page(page, "https://example.com")
+    timeouts = replace(Timeouts(), dom_capture_milliseconds=1500)
+    result = await capture_page(page, "https://example.com", timeouts=timeouts)
 
     assert result.http_status == 200
     assert result.error is None
@@ -164,7 +163,7 @@ async def test_capture_page_never_settling_dom_drops_html(page: Page, monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_capture_page_hanging_font_drops_screenshot(page: Page, monkeypatch):
+async def test_capture_page_hanging_font_drops_screenshot(page: Page):
     """A font that never loads stalls only the screenshot, not the html."""
     await page.route(
         "https://example.com/hanging-font.woff2",
@@ -177,10 +176,12 @@ async def test_capture_page_hanging_font_drops_screenshot(page: Page, monkeypatc
             headers={"content-type": "text/html"},
         ),
     )
-    monkeypatch.setattr(capture_module, "LOAD_TIMEOUT_MS", 2000)
-    monkeypatch.setattr(capture_module, "CAPTURE_TIMEOUT_MS", 1500)
-
-    result = await capture_page(page, "https://example.com")
+    timeouts = replace(
+        Timeouts(),
+        load_milliseconds=2000,
+        screenshot_milliseconds=1500,
+    )
+    result = await capture_page(page, "https://example.com", timeouts=timeouts)
 
     assert result.http_status == 200
     # The hanging font keeps the load event from firing, and Playwright's
@@ -208,4 +209,4 @@ class _FakeDownload:
 async def test_save_download_failure_propagates():
     download = _FakeDownload(save_error=OSError("disk full"))
     with pytest.raises(OSError, match="disk full"):
-        await _save_download(download)
+        await _save_download(download, Timeouts())

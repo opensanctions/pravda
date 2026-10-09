@@ -10,15 +10,9 @@ from playwright.async_api import Download, Page
 from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import TimeoutError as PlaywrightTimeout
 
-logger = logging.getLogger(__name__)
+from pravda.config import Timeouts
 
-NAV_TIMEOUT_MS = 10_000
-LOAD_TIMEOUT_MS = 30_000
-CAPTURE_TIMEOUT_MS = 15_000
-DOM_CAPTURE_TIMEOUT_S = 10
-DOM_SETTLE_QUIET_MS = 500
-DOWNLOAD_TIMEOUT_S = 15
-DRIVE_TIMEOUT_S = 60
+logger = logging.getLogger(__name__)
 
 
 class DriveTimeoutError(Exception):
@@ -90,10 +84,10 @@ class _PageObserver:
         ):
             self.navigation_status = response.status
 
-    async def wait_download(self, url: str) -> Download:
-        """Wait up to ``DOWNLOAD_TIMEOUT_S`` for the first download."""
+    async def wait_download(self, url: str, timeouts: Timeouts) -> Download:
+        """Wait up to the download budget for the first download."""
         try:
-            async with asyncio.timeout(DOWNLOAD_TIMEOUT_S):
+            async with asyncio.timeout(timeouts.download_milliseconds / 1000):
                 await self._download_seen.wait()
         except asyncio.TimeoutError as error:
             raise PlaywrightError(f"Download event did not fire for {url}") from error
@@ -101,10 +95,12 @@ class _PageObserver:
         return self.download
 
 
-async def capture_page(page: Page, url: str) -> CaptureResult:
+async def capture_page(
+    page: Page, url: str, timeouts: Timeouts = Timeouts()
+) -> CaptureResult:
     """Navigate to *url* and capture its status, page artifacts, or download."""
     async with _PageObserver(page) as observer:
-        navigation = await _navigate(page, url)
+        navigation = await _navigate(page, url, timeouts)
 
         downloaded: DownloadedBody | None = None
         http_status = navigation.http_status
@@ -112,12 +108,12 @@ async def capture_page(page: Page, url: str) -> CaptureResult:
         html = screenshot = None
 
         if navigation.is_download:
-            download = await observer.wait_download(url)
-            downloaded = await _save_download(download)
+            download = await observer.wait_download(url, timeouts)
+            downloaded = await _save_download(download, timeouts)
             http_status = observer.navigation_status
             final_url = downloaded.url
         elif navigation.http_status is not None:
-            html, screenshot = await _capture_artifacts(page)
+            html, screenshot = await _capture_artifacts(page, timeouts)
 
         return CaptureResult(
             http_status=http_status,
@@ -137,15 +133,17 @@ class _Navigation:
     is_download: bool
 
 
-async def _navigate(page: Page, url: str) -> _Navigation:
+async def _navigate(page: Page, url: str, timeouts: Timeouts) -> _Navigation:
     """Navigate to commit, retain its status, then wait for normal load."""
     http_status: int | None = None
     final_url: str | None = None
     try:
-        response = await page.goto(url, wait_until="commit", timeout=NAV_TIMEOUT_MS)
+        response = await page.goto(
+            url, wait_until="commit", timeout=timeouts.nav_milliseconds
+        )
         http_status = response.status
         final_url = page.url
-        await page.wait_for_load_state("load", timeout=LOAD_TIMEOUT_MS)
+        await page.wait_for_load_state("load", timeout=timeouts.load_milliseconds)
         return _Navigation(
             http_status=http_status,
             error=None,
@@ -171,10 +169,12 @@ async def _navigate(page: Page, url: str) -> _Navigation:
         )
 
 
-async def _capture_artifacts(page: Page) -> tuple[str | None, bytes | None]:
+async def _capture_artifacts(
+    page: Page, timeouts: Timeouts
+) -> tuple[str | None, bytes | None]:
     """Wait for the DOM to settle, then capture its HTML and screenshot."""
     try:
-        async with asyncio.timeout(DOM_CAPTURE_TIMEOUT_S):
+        async with asyncio.timeout(timeouts.dom_capture_milliseconds / 1000):
             # Attribute changes re-arm the quiet timer alongside structural ones:
             # late framework re-renders toggle layout classes long after load.
             await page.evaluate(
@@ -196,7 +196,7 @@ async def _capture_artifacts(page: Page) -> tuple[str | None, bytes | None]:
                     });
                 })
                 """,
-                DOM_SETTLE_QUIET_MS,
+                timeouts.dom_settle_quiet_milliseconds,
             )
             html = await page.content()
     except (asyncio.TimeoutError, PlaywrightTimeout):
@@ -217,7 +217,7 @@ async def _capture_artifacts(page: Page) -> tuple[str | None, bytes | None]:
         screenshot = await page.screenshot(
             full_page=True,
             clip=screenshot_clip,
-            timeout=CAPTURE_TIMEOUT_MS,
+            timeout=timeouts.screenshot_milliseconds,
         )
     except PlaywrightTimeout:
         logger.warning("Timeout capturing screenshot for %s", page.url)
@@ -234,15 +234,16 @@ async def capture_current(
     final_url: str,
     navigation_status: int | None,
     download: Download | None,
+    timeouts: Timeouts,
 ) -> CaptureResult:
     """Capture the current page or download without navigating."""
     downloaded: DownloadedBody | None = None
     if download is not None:
-        downloaded = await _save_download(download)
+        downloaded = await _save_download(download, timeouts)
 
     html = screenshot = None
     if navigation_status is not None and download is None:
-        html, screenshot = await _capture_artifacts(page)
+        html, screenshot = await _capture_artifacts(page, timeouts)
 
     return CaptureResult(
         http_status=navigation_status,
@@ -254,15 +255,17 @@ async def capture_current(
     )
 
 
-async def capture_driven(page: Page, url: str, drive: DriveCallback) -> CaptureResult:
+async def capture_driven(
+    page: Page, url: str, drive: DriveCallback, timeouts: Timeouts = Timeouts()
+) -> CaptureResult:
     """Run *drive*, then capture the resulting HTTP(S) page or download."""
     async with _PageObserver(page) as observer:
         try:
-            async with asyncio.timeout(DRIVE_TIMEOUT_S):
+            async with asyncio.timeout(timeouts.drive_milliseconds / 1000):
                 await drive(page, url)
         except asyncio.TimeoutError as error:
             raise DriveTimeoutError(
-                f"drive callback exceeded {DRIVE_TIMEOUT_S}s budget"
+                f"drive callback exceeded {timeouts.drive_milliseconds:g}ms budget"
             ) from error
 
         if (
@@ -276,7 +279,7 @@ async def capture_driven(page: Page, url: str, drive: DriveCallback) -> CaptureR
             )
 
         if observer.download is None and page.url == "about:blank":
-            await observer.wait_download(url)
+            await observer.wait_download(url, timeouts)
 
         download = observer.download
         final_url = download.url if download is not None else page.url
@@ -288,16 +291,16 @@ async def capture_driven(page: Page, url: str, drive: DriveCallback) -> CaptureR
             )
 
         return await capture_current(
-            page, final_url, observer.navigation_status, download
+            page, final_url, observer.navigation_status, download, timeouts
         )
 
 
-async def _save_download(download: Download) -> DownloadedBody:
+async def _save_download(download: Download, timeouts: Timeouts) -> DownloadedBody:
     """Save a remote download or propagate the recovery failure."""
     try:
         with tempfile.TemporaryDirectory() as download_dir:
             download_path = Path(download_dir) / "download"
-            async with asyncio.timeout(DOWNLOAD_TIMEOUT_S):
+            async with asyncio.timeout(timeouts.download_milliseconds / 1000):
                 await download.save_as(str(download_path))
                 return DownloadedBody(
                     url=download.url,
@@ -306,5 +309,6 @@ async def _save_download(download: Download) -> DownloadedBody:
                 )
     except asyncio.TimeoutError as error:
         raise PlaywrightError(
-            f"Download save exceeded {DOWNLOAD_TIMEOUT_S}s budget for {download.url}"
+            f"Download save exceeded {timeouts.download_milliseconds:g}ms budget"
+            f" for {download.url}"
         ) from error
