@@ -4,6 +4,8 @@ import asyncio
 import logging
 import shutil
 import tempfile
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -129,24 +131,40 @@ async def _finalize_capture(
     )
 
 
-async def _cleanup(browser: Browser | None, playwright, timeouts: Timeouts) -> None:
-    """Best-effort cleanup that never changes the capture outcome."""
-    operations = []
-    if browser is not None:
-        operations.append(("browser.close", browser.close))
-    if playwright is not None:
-        operations.append(("playwright.stop", playwright.stop))
+async def _stop_bounded(name: str, stop, timeouts: Timeouts) -> None:
+    """Run one teardown operation within the cleanup budget.
 
-    for name, operation in operations:
-        try:
-            async with asyncio.timeout(timeouts.cleanup_milliseconds / 1000):
-                await operation()
-        except asyncio.TimeoutError:
-            logger.warning(
-                "%s exceeded %gms budget", name, timeouts.cleanup_milliseconds
-            )
-        except Exception as error:
-            logger.warning("%s failed: %s", name, error)
+    Teardown never changes the capture outcome: it logs instead of raising.
+    """
+    try:
+        async with asyncio.timeout(timeouts.cleanup_milliseconds / 1000):
+            await stop()
+    except asyncio.TimeoutError:
+        logger.warning("%s exceeded %gms budget", name, timeouts.cleanup_milliseconds)
+    except Exception as error:
+        logger.warning("%s failed: %s", name, error)
+
+
+@asynccontextmanager
+async def _browser_connection(
+    browser_ws_url: str, timeouts: Timeouts
+) -> AsyncIterator[Browser]:
+    """One capture's playwright driver and browser connection.
+
+    The context manager itself is held, not just the started object, so a
+    handshake cancelled after the driver process spawned can still be
+    stopped. Teardown is best-effort and bounded.
+    """
+    context_manager = async_playwright()
+    browser: Browser | None = None
+    try:
+        playwright = await context_manager.start()
+        browser = await _connect(playwright, browser_ws_url, timeouts)
+        yield browser
+    finally:
+        if browser is not None:
+            await _stop_bounded("browser.close", browser.close, timeouts)
+        await _stop_bounded("playwright.stop", context_manager.__aexit__, timeouts)
 
 
 async def _persist_snapshot(
@@ -193,42 +211,36 @@ async def _capture_to_result(
     timeouts: Timeouts,
 ) -> tuple[CaptureResult, StoredArtifacts]:
     """Capture and finalize one atomic evidence bundle."""
-    playwright = None
-    browser: Browser | None = None
     deadline = asyncio.timeout(timeouts.snapshot_milliseconds / 1000)
     try:
-        try:
-            async with deadline:
-                playwright = await async_playwright().start()
-                browser = await _connect(playwright, browser_ws_url, timeouts)
-
-                http_archive_path = http_archive_dir / "record.zip"
-                context = await browser.new_context(
-                    record_har_path=str(http_archive_path),
-                    record_har_content="attach",
-                )
-                page = await context.new_page()
-
-                if drive is None:
-                    result = await capture_page(page, url, timeouts)
-                else:
-                    result = await capture_driven(page, url, drive, timeouts)
-
-                artifacts = await _finalize_capture(
-                    context, result, http_archive_path, storage, timeouts
-                )
-                return result, artifacts
-        except asyncio.TimeoutError:
-            # Only the outer breaker is a persisted browser failure. Inner
-            # storage and HAR-processing timeouts remain operational errors.
-            if not deadline.expired():
-                raise
-            raise _CaptureFailure(
-                f"snapshot exceeded {timeouts.snapshot_milliseconds:g}ms"
-                " wall-clock budget"
+        async with (
+            deadline,
+            _browser_connection(browser_ws_url, timeouts) as browser,
+        ):
+            http_archive_path = http_archive_dir / "record.zip"
+            context = await browser.new_context(
+                record_har_path=str(http_archive_path),
+                record_har_content="attach",
             )
-    finally:
-        await _cleanup(browser, playwright, timeouts)
+            page = await context.new_page()
+
+            if drive is None:
+                result = await capture_page(page, url, timeouts)
+            else:
+                result = await capture_driven(page, url, drive, timeouts)
+
+            artifacts = await _finalize_capture(
+                context, result, http_archive_path, storage, timeouts
+            )
+            return result, artifacts
+    except asyncio.TimeoutError:
+        # Only the outer breaker is a persisted browser failure. Inner
+        # storage and HAR-processing timeouts remain operational errors.
+        if not deadline.expired():
+            raise
+        raise _CaptureFailure(
+            f"snapshot exceeded {timeouts.snapshot_milliseconds:g}ms wall-clock budget"
+        )
 
 
 async def _capture(
