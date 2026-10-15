@@ -29,7 +29,7 @@ The public API is exported from `pravda`: the configured `Pravda` instance, the 
   its own errors, and a wedged-but-alive dependency hangs until the caller
   cancels.
 - With `drive(page, url)`, the callback owns initial navigation and interaction; Pravda still owns capture, persistence, and cleanup.
-- Browser, navigation, and Playwright callback failures are persisted as failed snapshots. Non-Playwright callback exceptions propagate and persist nothing.
+- Navigation, capture, and Playwright callback failures are persisted as failed snapshots. Browser connection setup is Pravda's own infrastructure: its failures propagate and persist nothing, like storage and database failures. Non-Playwright callback exceptions propagate and persist nothing.
 - `Pravda` commits each capture attempt through the application-owned session factory.
 - `snapshots(url)` returns all exact-URL matches newest first, without pagination.
 - Concurrent `snapshot()` calls are safe: each opens its own browser connection, recording context, temporary directory, and database session.

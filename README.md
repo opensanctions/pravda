@@ -74,7 +74,9 @@ persisted snapshots after commit.
 By default, Pravda navigates to the URL, waits for the normal `load` state,
 captures the evidence, and persists the result. The target-facing capture is
 bounded by one wall-clock budget; a wedged-but-alive storage backend or
-database hangs until the caller cancels:
+database hangs until the caller cancels. A connection failure to the browser
+endpoint is Pravda's infrastructure, not the target: it propagates to the
+caller and persists nothing:
 
 ```python
 async def capture_example():

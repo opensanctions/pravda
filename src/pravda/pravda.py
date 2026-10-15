@@ -29,11 +29,6 @@ from pravda.storage import Storage
 
 logger = logging.getLogger(__name__)
 
-# Dead infrastructure fails promptly on its own errors; connect's timeout is
-# the one place Playwright would leave us unbounded. It defaults to 0 — no
-# timeout — so a black-holed handshake would wait ~2^31-1ms.
-_CONNECT_TIMEOUT_MS = 10_000
-
 # Capture and finalization form one atomic evidence operation: a context-close
 # failure invalidates the result, while standalone-HTML derivation failures
 # drop only that artifact.
@@ -143,45 +138,6 @@ async def _persist_snapshot(
     return from_record(record, storage)
 
 
-async def _capture_to_result(
-    url: str,
-    *,
-    drive: DriveCallback | None,
-    browser_ws_url: str,
-    http_archive_dir: Path,
-    storage: Storage,
-    timeouts: Timeouts,
-) -> tuple[CaptureResult, StoredArtifacts]:
-    # No browser.close(): stopping the driver disconnects, and the endpoint
-    # closes this connection's contexts and browsers on disconnect.
-    async with async_playwright() as playwright:
-        browser = await playwright.chromium.connect(
-            browser_ws_url, timeout=_CONNECT_TIMEOUT_MS
-        )
-
-        http_archive_path = http_archive_dir / "record.zip"
-        context = await browser.new_context(
-            record_har_path=str(http_archive_path),
-            record_har_content="attach",
-        )
-        page = await context.new_page()
-
-        try:
-            async with asyncio.timeout(timeouts.snapshot_milliseconds / 1000):
-                if drive is None:
-                    result = await capture_page(page, url, timeouts)
-                else:
-                    result = await capture_driven(page, url, drive, timeouts)
-        except asyncio.TimeoutError as error:
-            raise _CaptureFailure(
-                f"capture exceeded {timeouts.snapshot_milliseconds:g}ms"
-                " wall-clock budget"
-            ) from error
-
-        artifacts = await _finalize_capture(context, result, http_archive_path, storage)
-        return result, artifacts
-
-
 async def _capture(
     url: str,
     *,
@@ -195,19 +151,41 @@ async def _capture(
 
     http_archive_dir = Path(tempfile.mkdtemp())
     try:
-        try:
-            result, artifacts = await _capture_to_result(
-                url,
-                drive=drive,
-                browser_ws_url=browser_ws_url,
-                http_archive_dir=http_archive_dir,
-                storage=storage,
-                timeouts=timeouts,
+        # Connection setup is Pravda's machinery, not the target: an endpoint
+        # failure here propagates and persists nothing, like storage or
+        # database failures. No browser.close() either — stopping the driver
+        # disconnects, and the endpoint closes this connection's contexts and
+        # browsers on disconnect.
+        async with async_playwright() as playwright:
+            browser = await playwright.chromium.connect(browser_ws_url)
+
+            http_archive_path = http_archive_dir / "record.zip"
+            context = await browser.new_context(
+                record_har_path=str(http_archive_path),
+                record_har_content="attach",
             )
-        except (DriveTimeoutError, PlaywrightError, _CaptureFailure) as error:
-            logger.error("Capture failed for %s: %s", url, error)
-            result = CaptureResult(error=str(error))
-            artifacts = StoredArtifacts()
+            page = await context.new_page()
+
+            try:
+                try:
+                    async with asyncio.timeout(timeouts.snapshot_milliseconds / 1000):
+                        if drive is None:
+                            result = await capture_page(page, url, timeouts)
+                        else:
+                            result = await capture_driven(page, url, drive, timeouts)
+                except asyncio.TimeoutError as error:
+                    raise _CaptureFailure(
+                        f"capture exceeded {timeouts.snapshot_milliseconds:g}ms"
+                        " wall-clock budget"
+                    ) from error
+
+                artifacts = await _finalize_capture(
+                    context, result, http_archive_path, storage
+                )
+            except (DriveTimeoutError, PlaywrightError, _CaptureFailure) as error:
+                logger.error("Capture failed for %s: %s", url, error)
+                result = CaptureResult(error=str(error))
+                artifacts = StoredArtifacts()
     finally:
         shutil.rmtree(http_archive_dir, ignore_errors=True)
 

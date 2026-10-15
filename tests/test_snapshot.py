@@ -4,9 +4,10 @@ from pathlib import Path
 
 import pytest
 from playwright.async_api import Browser, Page
+from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import TimeoutError as PlaywrightTimeout
 
-from pravda import Timeouts
+from pravda import Pravda, PravdaConfig, Timeouts
 from pravda.capture import _save_download, capture_page
 from tests.helpers import FIXTURES, fulfill_html, fulfill_pdf
 
@@ -19,6 +20,21 @@ async def page(browser: Browser):
         yield page
     finally:
         await context.close()
+
+
+@pytest.mark.asyncio
+async def test_snapshot_unreachable_browser_propagates(sessionmaker, tmp_path):
+    """A dead browser endpoint is infrastructure: it propagates, persists nothing."""
+    config = PravdaConfig(
+        browser_ws_url="ws://127.0.0.1:1",
+        storage_base_path=str(tmp_path),
+    )
+    pravda = Pravda(config, sessionmaker)
+
+    with pytest.raises(PlaywrightError):
+        await pravda.snapshot("https://example.com")
+
+    assert await pravda.snapshots("https://example.com") == []
 
 
 @pytest.mark.asyncio
