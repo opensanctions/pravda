@@ -95,9 +95,7 @@ class _PageObserver:
         return self.download
 
 
-async def capture_page(
-    page: Page, url: str, timeouts: Timeouts = Timeouts()
-) -> CaptureResult:
+async def capture_page(page: Page, url: str, timeouts: Timeouts) -> CaptureResult:
     """Navigate to *url* and capture its status, page artifacts, or download."""
     async with _PageObserver(page) as observer:
         navigation = await _navigate(page, url, timeouts)
@@ -256,7 +254,7 @@ async def capture_current(
 
 
 async def capture_driven(
-    page: Page, url: str, drive: DriveCallback, timeouts: Timeouts = Timeouts()
+    page: Page, url: str, drive: DriveCallback, timeouts: Timeouts
 ) -> CaptureResult:
     """Run *drive*, then capture the resulting HTTP(S) page or download."""
     async with _PageObserver(page) as observer:

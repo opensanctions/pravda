@@ -1,6 +1,5 @@
-"""Shared helpers for routing browser fixtures and stalling storage writes."""
+"""Shared helpers for routing browser fixtures to fixture content."""
 
-import asyncio
 import base64
 from pathlib import Path
 
@@ -35,8 +34,3 @@ def fulfill_standalone(route):
         body=(FIXTURES / "standalone.html").read_text(),
         headers={"content-type": "text/html"},
     )
-
-
-async def slow_pipe_file(path, value, **kwargs):
-    """Stand in for a storage write that outlives its timeout budget."""
-    await asyncio.sleep(1)

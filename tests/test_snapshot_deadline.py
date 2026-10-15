@@ -2,11 +2,9 @@
 
 import asyncio
 import os
-import time
 from dataclasses import replace
 
 import pytest
-from playwright.async_api import Browser, BrowserContext
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from pravda import Pravda, PravdaConfig, Timeouts
@@ -45,16 +43,16 @@ async def test_snapshot_drive_timeout_persists_failed_attempt(sessionmaker, tmp_
 
 
 @pytest.mark.asyncio
-async def test_snapshot_total_timeout_persists_failed_attempt(
-    sessionmaker, tmp_path, monkeypatch
+async def test_snapshot_wall_clock_timeout_persists_failed_attempt(
+    sessionmaker, tmp_path
 ):
+    """The wall-clock breaker expires while no inner budget has."""
     pravda = _pravda(sessionmaker, tmp_path, snapshot_milliseconds=200)
 
-    async def slow_new_context(self, **kwargs):
+    async def drive(page, url):
         await asyncio.sleep(5)
 
-    monkeypatch.setattr(Browser, "new_context", slow_new_context)
-    snapshot = await pravda.snapshot("https://example.com")
+    snapshot = await pravda.snapshot("https://example.com", drive=drive)
 
     assert "wall-clock" in snapshot.error
     assert snapshot.http_status is None
@@ -64,30 +62,11 @@ async def test_snapshot_total_timeout_persists_failed_attempt(
 
 
 @pytest.mark.asyncio
-async def test_context_close_timeout_discards_evidence(
+async def test_snapshot_wedged_persistence_bounded_by_caller(
     sessionmaker, tmp_path, monkeypatch
 ):
-    pravda = _pravda(sessionmaker, tmp_path, context_close_milliseconds=10)
-
-    async def slow_close(self, **kwargs):
-        await asyncio.sleep(1)
-
-    monkeypatch.setattr(BrowserContext, "close", slow_close)
-    snapshot = await pravda.snapshot("https://example.com", drive=_drive_example)
-
-    assert "context close" in snapshot.error
-    assert snapshot.http_status is None
-    assert snapshot.final_url is None
-    assert snapshot.rendered_html is None
-    assert snapshot.screenshot is None
-    assert snapshot.http_archive is None
-
-
-@pytest.mark.asyncio
-async def test_snapshot_persistence_timeout_propagates(
-    sessionmaker, tmp_path, monkeypatch
-):
-    pravda = _pravda(sessionmaker, tmp_path, persist_milliseconds=200)
+    """A wedged database hangs until the caller cancels, persisting nothing."""
+    pravda = _pravda(sessionmaker, tmp_path)
 
     async def hanging_commit(self):
         await asyncio.sleep(5)
@@ -95,29 +74,10 @@ async def test_snapshot_persistence_timeout_propagates(
     monkeypatch.setattr(AsyncSession, "commit", hanging_commit)
 
     with pytest.raises(asyncio.TimeoutError):
-        await pravda.snapshot("https://example.com", drive=_drive_example)
+        async with asyncio.timeout(4):
+            await pravda.snapshot("https://example.com", drive=_drive_example)
 
     assert await pravda.snapshots("https://example.com") == []
-
-
-@pytest.mark.asyncio
-async def test_snapshot_cleanup_is_bounded_and_keeps_outcome(
-    sessionmaker, tmp_path, monkeypatch
-):
-    pravda = _pravda(sessionmaker, tmp_path, cleanup_milliseconds=200)
-
-    async def slow_close(self, **kwargs):
-        await asyncio.sleep(5)
-
-    monkeypatch.setattr(Browser, "close", slow_close)
-
-    start = time.monotonic()
-    snapshot = await pravda.snapshot("https://example.com", drive=_drive_example)
-
-    assert snapshot.http_status == 200
-    assert snapshot.error is None
-    assert snapshot.http_archive is not None
-    assert time.monotonic() - start < 4
 
 
 @pytest.mark.asyncio

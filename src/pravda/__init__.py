@@ -20,9 +20,7 @@ an application-owned async session factory::
 
 Applications own the database engine and dispose it on shutdown.
 
-Capture budgets default to ``Timeouts()``; override individual fields with
-``dataclasses.replace`` when targets, storage, or databases are slower than
-the defaults assume.
+Capture budgets bound the target website only and default to ``Timeouts()``.
 """
 
 from pravda.config import PravdaConfig, Timeouts

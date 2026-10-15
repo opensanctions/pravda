@@ -59,8 +59,8 @@ application-owned `async_sessionmaker` passed to `Pravda`:
 - `browser_ws_url` — remote Playwright WebSocket URL.
 - `storage_base_path` — fsspec storage URL, such as `./data`, `s3://bucket`,
   or `gs://bucket`.
-- `timeouts` — a frozen `Timeouts` of wall-clock budgets for every pipeline
-  stage, defaulting to sensible values; see its docstring for what each
+- `timeouts` — a frozen `Timeouts` of wall-clock budgets for the captured
+  website, defaulting to sensible values; see its docstring for what each
   budget does on expiry. Override individual fields with
   `dataclasses.replace(Timeouts(), load_milliseconds=60_000)`.
 
@@ -72,8 +72,9 @@ persisted snapshots after commit.
 ### Capture a page
 
 By default, Pravda navigates to the URL, waits for the normal `load` state,
-captures the evidence, and persists the result. Capture and HAR finalization
-share one wall-clock deadline; persistence is bounded separately:
+captures the evidence, and persists the result. The target-facing capture is
+bounded by one wall-clock budget; a wedged-but-alive storage backend or
+database hangs until the caller cancels:
 
 ```python
 async def capture_example():
@@ -130,8 +131,7 @@ derived from the rendered DOM and the recorded HAR bodies for direct
 inspection; derivation failures drop only that artifact.
 Persisted database fields and HAR values keep their relative, content-addressed
 names; consumers read the resolved paths directly from the shared fsspec
-backend. Storage writes are bounded; timeouts and other storage failures
-propagate, and no snapshot record is persisted.
+backend. Storage failures propagate, and no snapshot record is persisted.
 
 ## Infrastructure
 

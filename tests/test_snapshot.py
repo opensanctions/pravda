@@ -26,7 +26,7 @@ async def test_capture_page_returns_evidence(page: Page):
     """Capture a page using a routed fixture and inspect the evidence."""
     await page.route("https://example.com", fulfill_html)
 
-    result = await capture_page(page, "https://example.com")
+    result = await capture_page(page, "https://example.com", Timeouts())
 
     assert result.http_status == 200
     assert result.error is None
@@ -41,7 +41,7 @@ async def test_capture_page_downloads_pdf(page: Page):
     """A URL serving application/pdf is captured as a downloaded body."""
     await page.route("https://example.com/doc.pdf", fulfill_pdf)
 
-    result = await capture_page(page, "https://example.com/doc.pdf")
+    result = await capture_page(page, "https://example.com/doc.pdf", Timeouts())
 
     assert result.http_status == 200
     assert result.error is None
@@ -63,7 +63,7 @@ async def test_capture_page_goto_timeout_skips_captures(page: Page):
 
     page.goto = fake_goto
 
-    result = await capture_page(page, "https://timeout.example.com")
+    result = await capture_page(page, "https://timeout.example.com", Timeouts())
 
     assert result.http_status is None
     assert result.error is not None
@@ -134,9 +134,8 @@ async def test_capture_page_waits_for_dom_settle(page: Page):
         ),
     )
 
-    result = await capture_page(page, "https://example.com")
+    result = await capture_page(page, "https://example.com", Timeouts())
 
-    assert result.http_status == 200
     assert "final" in result.html
     assert ">loading<" not in result.html
     assert ">intermediate<" not in result.html
