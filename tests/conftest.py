@@ -2,6 +2,7 @@
 
 import os
 import uuid
+from dataclasses import replace
 
 import pytest
 from playwright.async_api import async_playwright
@@ -15,8 +16,10 @@ from pravda.storage import Storage
 
 @pytest.fixture()
 def timeouts() -> Timeouts:
-    """Default capture budgets; tests override fields when they need to."""
-    return Timeouts()
+    """Fast capture budgets; tests override fields when they need to."""
+    # dom_settle_quiet is a duration paid by every capture, and fixture
+    # pages are static: they settle immediately.
+    return replace(Timeouts(), dom_settle_quiet=0.05)
 
 
 @pytest.fixture()

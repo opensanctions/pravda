@@ -37,11 +37,11 @@ async def test_snapshot_unreachable_browser_propagates(sessionmaker, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_capture_page_returns_evidence(page: Page):
+async def test_capture_page_returns_evidence(page: Page, timeouts: Timeouts):
     """Capture a page using a routed fixture and inspect the evidence."""
     await page.route("https://example.com", fulfill_html)
 
-    result = await capture_page(page, "https://example.com", Timeouts())
+    result = await capture_page(page, "https://example.com", timeouts)
 
     assert result.http_status == 200
     assert result.error is None
@@ -104,7 +104,7 @@ async def test_http_commit_captured_when_load_times_out(page: Page):
         ),
     )
 
-    timeouts = replace(Timeouts(), load=2)
+    timeouts = replace(Timeouts(), load=0.2, dom_settle_quiet=0.05)
     result = await capture_page(page, "https://slow.example.com", timeouts=timeouts)
 
     assert result.http_status == 200
@@ -129,7 +129,7 @@ async def test_capture_page_dom_capture_timeout_skips_content(page: Page):
 
     page.content = slow_content
 
-    timeouts = replace(Timeouts(), dom_capture=0.2)
+    timeouts = replace(Timeouts(), dom_capture=0.5, dom_settle_quiet=0.05)
     result = await capture_page(page, "https://example.com", timeouts=timeouts)
 
     assert result.http_status == 200
@@ -149,7 +149,12 @@ async def test_capture_page_waits_for_dom_settle(page: Page):
         ),
     )
 
-    result = await capture_page(page, "https://example.com", Timeouts())
+    # A deliberate race with the settle heuristic: the quiet window must
+    # outlast the fixture's 100ms mutation gaps, or the DOM settles too
+    # early and captures a pre-hydration state.
+    result = await capture_page(
+        page, "https://example.com", replace(Timeouts(), dom_settle_quiet=0.2)
+    )
 
     assert "final" in result.html
     assert ">loading<" not in result.html
@@ -167,7 +172,7 @@ async def test_capture_page_never_settling_dom_drops_html(page: Page):
             headers={"content-type": "text/html"},
         ),
     )
-    timeouts = replace(Timeouts(), dom_capture=1.5)
+    timeouts = replace(Timeouts(), dom_capture=0.3)
     result = await capture_page(page, "https://example.com", timeouts=timeouts)
 
     assert result.http_status == 200
@@ -192,8 +197,9 @@ async def test_capture_page_hanging_font_drops_screenshot(page: Page):
     )
     timeouts = replace(
         Timeouts(),
-        load=2,
-        screenshot=1.5,
+        load=0.2,
+        screenshot=0.2,
+        dom_settle_quiet=0.05,
     )
     result = await capture_page(page, "https://example.com", timeouts=timeouts)
 

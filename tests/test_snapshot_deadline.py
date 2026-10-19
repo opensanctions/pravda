@@ -22,7 +22,7 @@ def _pravda(sessionmaker, tmp_path, liveness=None, **budgets: float) -> Pravda:
     config = PravdaConfig(
         browser_ws_url=os.environ["PRAVDA_TEST_BROWSER_WS_URL"],
         storage_base_path=str(tmp_path),
-        timeouts=replace(Timeouts(), **budgets),
+        timeouts=replace(Timeouts(), dom_settle_quiet=0.05, **budgets),
         liveness=liveness or Liveness(),
     )
     return Pravda(config, sessionmaker)
@@ -108,14 +108,23 @@ async def test_snapshot_wedged_persistence_bounded_by_caller(
     """A wedged database hangs until the caller cancels, persisting nothing."""
     pravda = _pravda(sessionmaker, tmp_path)
 
+    commit_started = asyncio.Event()
+
     async def hanging_commit(self):
+        commit_started.set()
         await asyncio.sleep(5)
 
     monkeypatch.setattr(AsyncSession, "commit", hanging_commit)
 
+    capture = asyncio.create_task(
+        pravda.snapshot("https://example.com", drive=_drive_example)
+    )
+    # Reach the wedge first, so the bound below cancels the commit —
+    # not a capture that simply was not done yet.
+    await asyncio.wait_for(commit_started.wait(), timeout=10)
+
     with pytest.raises(asyncio.TimeoutError):
-        async with asyncio.timeout(4):
-            await pravda.snapshot("https://example.com", drive=_drive_example)
+        await asyncio.wait_for(capture, timeout=0.2)
 
     assert await pravda.snapshots("https://example.com") == []
 
