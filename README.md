@@ -38,7 +38,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from pravda import Pravda, PravdaConfig
 
 engine = create_async_engine("postgresql+psycopg://pravda:pravda@localhost:5432/pravda")
-sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
+sessionmaker = async_sessionmaker(engine)
 config = PravdaConfig(
     browser_ws_url="ws://localhost:3000",
     storage_base_path="./data",

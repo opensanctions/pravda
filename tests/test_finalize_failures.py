@@ -38,6 +38,19 @@ async def test_context_close_failure_raises(browser, storage, tmp_path, timeouts
 
 
 @pytest.mark.asyncio
+async def test_missing_http_archive_raises(browser, storage, tmp_path, timeouts):
+    """A close that leaves no HAR is infrastructure: it raises, persisting nothing."""
+    context, captured, path = await _record_example(browser, tmp_path, timeouts)
+    await context.close()
+    path.unlink()
+
+    with pytest.raises(
+        InfrastructureError, match="closed without producing an HTTP archive"
+    ):
+        await pravda_module._store_artifacts(captured, path, storage)
+
+
+@pytest.mark.asyncio
 async def test_snapshot_har_storage_failure_propagates_without_persisting(
     pravda: Pravda, monkeypatch
 ):

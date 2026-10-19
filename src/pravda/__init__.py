@@ -8,7 +8,7 @@ an application-owned async session factory::
     from pravda import Pravda, PravdaConfig
 
     engine = create_async_engine(database_url)
-    sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
+    sessionmaker = async_sessionmaker(engine)
     config = PravdaConfig(
         browser_ws_url=...,
         storage_base_path=...,

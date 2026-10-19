@@ -29,9 +29,13 @@ from pravda.storage import Storage
 
 logger = logging.getLogger(__name__)
 
-# Persisted snapshots record target-facing outcomes; browser machinery
-# failures raise and persist nothing. Evidence finalizes atomically, except
-# standalone-HTML derivation failures, which drop only that artifact.
+# The persist/raise boundary is the capture zone, not the failure's
+# nature: navigation, capture, and Playwright callback failures persist
+# as failed snapshots — snapshot.error may carry browser noise like
+# "Target crashed", since Playwright has one Error type. Browser setup
+# and context close are machinery: they raise InfrastructureError and
+# persist nothing. Evidence finalizes atomically, except standalone-HTML
+# derivation failures, which drop only that artifact.
 
 
 class InfrastructureError(Exception):
