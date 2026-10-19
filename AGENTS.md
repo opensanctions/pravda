@@ -15,7 +15,7 @@ Pravda is an async Python library for capturing durable web evidence with a remo
 - The Playwright package is a client. Pravda connects to an externally provisioned browser over WebSocket and never launches one; the endpoint owns its launch configuration.
 - Database access is async SQLAlchemy (PostgreSQL or SQLite). Consumers own the database and its migration ledger; library code must not create the schema.
 - Store artifacts through fsspec using content-addressed filenames.
-- Runtime configuration is explicit and instance-scoped. Applications construct `PravdaConfig(browser_ws_url, storage_base_path)`, own their SQLAlchemy `AsyncEngine` and an `async_sessionmaker` configured with `expire_on_commit=False`, and pass both to a long-lived `Pravda` instance. The application disposes the engine.
+- Runtime configuration is explicit and instance-scoped. Applications construct `PravdaConfig(browser_ws_url, storage_base_path)`, own their SQLAlchemy `AsyncEngine` and an `async_sessionmaker` configured with `expire_on_commit=False`, and pass both to a long-lived `Pravda` instance. The application disposes the engine. Browser liveness deadlines are configured the same way, on `PravdaConfig.liveness`.
 - The package ships no Alembic migrations. Consumers generate their own from `pravda.db.Base` metadata in their own Alembic environment.
 - Add dependencies with `uv add`; do not edit `pyproject.toml` manually.
 
@@ -25,9 +25,11 @@ The public API is exported from `pravda`: the configured `Pravda` instance, the 
 
 - Without `drive`, `snapshot()` owns navigation and the complete capture pipeline.
 - The target-facing capture must remain bounded by one wall-clock timeout.
-  Pravda's own machinery carries no budgets: dead infrastructure fails on
-  its own errors, and a wedged-but-alive dependency hangs until the caller
-  cancels.
+  Browser setup and context close carry liveness deadlines from
+  `PravdaConfig.liveness`; their expiry is infrastructure failure, not
+  evidence about the target. Storage and database carry no budgets: dead
+  infrastructure fails on its own errors, and a wedged-but-alive dependency
+  hangs until the caller cancels.
 - With `drive(page, url)`, the callback owns initial navigation and interaction; Pravda still owns capture, persistence, and cleanup.
 - Navigation, capture, and Playwright callback failures are persisted as failed snapshots. Browser connection setup is Pravda's own infrastructure: its failures propagate and persist nothing, like storage and database failures. Non-Playwright callback exceptions propagate and persist nothing.
 - `Pravda` commits each capture attempt through the application-owned session factory.

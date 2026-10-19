@@ -34,7 +34,9 @@ async def test_context_close_failure_discards_evidence(browser, storage, tmp_pat
         pravda_module._CaptureFailure,
         match="browser context close failed: context teardown lost the connection",
     ):
-        await pravda_module._finalize_capture(context, captured, path, storage)
+        await pravda_module._finalize_capture(
+            context, captured, path, storage, close_timeout=30.0
+        )
 
 
 @pytest.mark.asyncio

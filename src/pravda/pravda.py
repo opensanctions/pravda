@@ -20,7 +20,7 @@ from pravda.capture import (
     capture_page,
     is_http_url,
 )
-from pravda.config import PravdaConfig, Timeouts
+from pravda.config import Liveness, PravdaConfig, Timeouts
 from pravda.db import SnapshotRecord
 from pravda.http_archive import capture_http_archive
 from pravda.snapshots import Snapshot, from_record
@@ -53,9 +53,15 @@ async def _finalize_capture(
     result: CaptureResult,
     http_archive_path: Path,
     storage: Storage,
+    close_timeout: float,
 ) -> StoredArtifacts:
     try:
-        await context.close()
+        async with asyncio.timeout(close_timeout):
+            await context.close()
+    except TimeoutError as error:
+        raise _CaptureFailure(
+            f"browser context close exceeded {close_timeout:g}s budget"
+        ) from error
     except Exception as error:
         raise _CaptureFailure(f"browser context close failed: {error}") from error
 
@@ -146,25 +152,30 @@ async def _capture(
     sessionmaker: async_sessionmaker,
     storage: Storage,
     timeouts: Timeouts,
+    liveness: Liveness,
 ) -> Snapshot:
     logger.info("Capturing %s", url)
 
     http_archive_dir = Path(tempfile.mkdtemp())
     try:
-        # Connection setup is Pravda's machinery, not the target: an endpoint
-        # failure here propagates and persists nothing, like storage or
-        # database failures. No browser.close() either — stopping the driver
-        # disconnects, and the endpoint closes this connection's contexts and
-        # browsers on disconnect.
         async with async_playwright() as playwright:
-            browser = await playwright.chromium.connect(browser_ws_url)
-
-            http_archive_path = http_archive_dir / "record.zip"
-            context = await browser.new_context(
-                record_har_path=str(http_archive_path),
-                record_har_content="attach",
-            )
-            page = await context.new_page()
+            # Connection setup is Pravda's machinery, not the target: its
+            # failures propagate and persist nothing. No browser.close()
+            # either — stopping the driver disconnects, and the endpoint
+            # closes this connection's contexts and browsers on disconnect.
+            try:
+                async with asyncio.timeout(liveness.setup):
+                    browser = await playwright.chromium.connect(browser_ws_url)
+                    http_archive_path = http_archive_dir / "record.zip"
+                    context = await browser.new_context(
+                        record_har_path=str(http_archive_path),
+                        record_har_content="attach",
+                    )
+                    page = await context.new_page()
+            except TimeoutError as error:
+                raise PlaywrightError(
+                    f"browser connection setup exceeded {liveness.setup:g}s budget"
+                ) from error
 
             try:
                 try:
@@ -179,7 +190,7 @@ async def _capture(
                     ) from error
 
                 artifacts = await _finalize_capture(
-                    context, result, http_archive_path, storage
+                    context, result, http_archive_path, storage, liveness.close
                 )
             except (DriveTimeoutError, PlaywrightError, _CaptureFailure) as error:
                 logger.error("Capture failed for %s: %s", url, error)
@@ -209,6 +220,7 @@ class Pravda:
         self._timeouts = config.timeouts
         self._storage = Storage.from_url(config.storage_base_path)
         self._browser_ws_url = config.browser_ws_url
+        self._liveness = config.liveness
 
     async def snapshot(
         self, url: str, *, drive: DriveCallback | None = None
@@ -220,7 +232,9 @@ class Pravda:
         recording page; Pravda then captures its current state. The first
         download triggered by the callback becomes the capture subject.
 
-        A wedged-but-alive storage backend or database hangs until the caller
+        A wedged-but-alive browser endpoint fails at the liveness deadlines
+        on ``PravdaConfig.liveness`` (seconds, default 30 each). A
+        wedged-but-alive storage backend or database hangs until the caller
         cancels, and cancellation persists nothing.
         """
         if not is_http_url(url):
@@ -232,6 +246,7 @@ class Pravda:
             sessionmaker=self._sessionmaker,
             storage=self._storage,
             timeouts=self._timeouts,
+            liveness=self._liveness,
         )
 
     async def snapshots(self, url: str) -> list[Snapshot]:

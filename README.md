@@ -53,7 +53,7 @@ async def capture_example():
 
 ## Configuration
 
-`PravdaConfig` takes two settings, supplied explicitly per instance, plus an
+`PravdaConfig` takes three settings, supplied explicitly per instance, plus an
 application-owned `async_sessionmaker` passed to `Pravda`:
 
 - `browser_ws_url` — remote Playwright WebSocket URL.
@@ -63,6 +63,12 @@ application-owned `async_sessionmaker` passed to `Pravda`:
   website, defaulting to sensible values; see its docstring for what each
   budget does on expiry. Override individual fields with
   `dataclasses.replace(Timeouts(), load=60)`.
+- `liveness` — a frozen `Liveness` of deadlines for Pravda's own browser
+  machinery; expiry is infrastructure failure, not evidence about the
+  captured website. `setup` bounds connecting and preparing the recording
+  context, and its expiry propagates to the caller like any other browser
+  connection failure. `close` bounds closing the context, and its expiry
+  fails the snapshot. Both are seconds, default 30.
 
 The session factory must use `expire_on_commit=False`, because Pravda reads
 persisted snapshots after commit.
@@ -74,7 +80,8 @@ persisted snapshots after commit.
 By default, Pravda navigates to the URL, waits for the normal `load` state,
 captures the evidence, and persists the result. The target-facing capture is
 bounded by one wall-clock budget; a wedged-but-alive storage backend or
-database hangs until the caller cancels. A connection failure to the browser
+database hangs until the caller cancels. A wedged-but-alive browser endpoint
+fails at the `liveness` deadlines. A connection failure to the browser
 endpoint is Pravda's infrastructure, not the target: it propagates to the
 caller and persists nothing:
 

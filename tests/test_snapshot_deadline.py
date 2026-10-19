@@ -1,13 +1,15 @@
-"""Wall-clock bounds for ``Pravda.snapshot``."""
+"""Liveness and wall-clock bounds for ``Pravda.snapshot``."""
 
 import asyncio
 import os
 from dataclasses import replace
 
 import pytest
+from playwright.async_api import BrowserContext, BrowserType
+from playwright.async_api import Error as PlaywrightError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from pravda import Pravda, PravdaConfig, Timeouts
+from pravda import Liveness, Pravda, PravdaConfig, Timeouts
 from tests.helpers import fulfill_html
 
 
@@ -16,12 +18,13 @@ async def _drive_example(page, url):
     await page.goto(url, wait_until="load")
 
 
-def _pravda(sessionmaker, tmp_path, **budgets: float) -> Pravda:
+def _pravda(sessionmaker, tmp_path, liveness=None, **budgets: float) -> Pravda:
     """A client with the given budget fields shrunk from the defaults."""
     config = PravdaConfig(
         browser_ws_url=os.environ["PRAVDA_TEST_BROWSER_WS_URL"],
         storage_base_path=str(tmp_path),
         timeouts=replace(Timeouts(), **budgets),
+        liveness=liveness or Liveness(),
     )
     return Pravda(config, sessionmaker)
 
@@ -59,6 +62,47 @@ async def test_snapshot_wall_clock_timeout_persists_failed_attempt(
     assert snapshot.final_url is None
     assert snapshot.rendered_html is None
     assert snapshot.http_archive is None
+
+
+@pytest.mark.asyncio
+async def test_setup_timeout_propagates_without_persisting(
+    sessionmaker, tmp_path, monkeypatch
+):
+    pravda = _pravda(sessionmaker, tmp_path, liveness=Liveness(setup=0.2))
+
+    async def slow_connect(self, url, **kwargs):
+        await asyncio.sleep(5)
+
+    monkeypatch.setattr(BrowserType, "connect", slow_connect)
+
+    with pytest.raises(PlaywrightError, match="setup"):
+        await pravda.snapshot("https://example.com", drive=_drive_example)
+
+    assert await pravda.snapshots("https://example.com") == []
+
+
+@pytest.mark.asyncio
+async def test_context_close_timeout_discards_evidence(
+    sessionmaker, tmp_path, monkeypatch
+):
+    pravda = _pravda(sessionmaker, tmp_path, liveness=Liveness(close=0.2))
+
+    async def slow_close(self, **kwargs):
+        await asyncio.sleep(5)
+
+    monkeypatch.setattr(BrowserContext, "close", slow_close)
+    snapshot = await pravda.snapshot("https://example.com", drive=_drive_example)
+
+    assert "context close" in snapshot.error
+    assert snapshot.http_status is None
+    assert snapshot.final_url is None
+    assert snapshot.rendered_html is None
+    assert snapshot.screenshot is None
+
+
+def test_liveness_deadlines_must_be_positive():
+    with pytest.raises(ValueError, match="setup"):
+        Liveness(setup=0)
 
 
 @pytest.mark.asyncio

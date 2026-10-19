@@ -34,9 +34,36 @@ class Timeouts:
 
 
 @dataclass(frozen=True)
+class Liveness:
+    """Deadlines for Pravda's own browser machinery, in seconds.
+
+    Unlike :class:`Timeouts`, expiry says nothing about the target: a
+    wedged-but-alive endpoint, not a slow website.
+
+        setup: Connecting to the endpoint and preparing the recording
+            context; expiry propagates to the caller like any other browser
+            connection failure.
+        close: Closing the recording context; an unfinalized recording
+            invalidates all evidence, so expiry fails the snapshot.
+    """
+
+    setup: float = 30.0
+    close: float = 30.0
+
+    def __post_init__(self) -> None:
+        for name in ("setup", "close"):
+            seconds = getattr(self, name)
+            if seconds <= 0:
+                raise ValueError(
+                    f"{name} must be a positive number of seconds, got {seconds!r}"
+                )
+
+
+@dataclass(frozen=True)
 class PravdaConfig:
     """Runtime configuration for a :class:`~pravda.Pravda` instance."""
 
     browser_ws_url: str
     storage_base_path: str
     timeouts: Timeouts = Timeouts()
+    liveness: Liveness = Liveness()
