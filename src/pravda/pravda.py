@@ -52,23 +52,23 @@ class StoredArtifacts:
     http_archive: dict | None = None
 
 
-async def _finalize_capture(
-    context: BrowserContext,
-    result: CaptureResult,
-    http_archive_path: Path,
-    storage: Storage,
-    close_timeout: float,
-) -> StoredArtifacts:
+async def _close_context(context: BrowserContext, liveness: Liveness) -> None:
+    """Close the recording context, finalizing its HAR on disk."""
     try:
-        async with asyncio.timeout(close_timeout):
+        async with asyncio.timeout(liveness.close):
             await context.close()
     except TimeoutError as error:
         raise InfrastructureError(
-            f"browser context close exceeded {close_timeout:g}s budget"
+            f"browser context close exceeded {liveness.close:g}s budget"
         ) from error
     except Exception as error:
         raise InfrastructureError(f"browser context close failed: {error}") from error
 
+
+async def _store_artifacts(
+    result: CaptureResult, http_archive_path: Path, storage: Storage
+) -> StoredArtifacts:
+    """Store captured evidence; the context must be closed so its HAR is flushed."""
     if result.http_status is None:
         return StoredArtifacts()
     if not http_archive_path.exists():
@@ -199,14 +199,13 @@ async def _capture(
                     raise _CaptureFailure(
                         f"capture exceeded {timeouts.snapshot:g}s wall-clock budget"
                     ) from error
-
-                artifacts = await _finalize_capture(
-                    context, result, http_archive_path, storage, liveness.close
-                )
             except (DriveTimeoutError, PlaywrightError, _CaptureFailure) as error:
                 logger.error("Capture failed for %s: %s", url, error)
                 result = CaptureResult(error=str(error))
                 artifacts = StoredArtifacts()
+            else:
+                await _close_context(context, liveness)
+                artifacts = await _store_artifacts(result, http_archive_path, storage)
     finally:
         shutil.rmtree(http_archive_dir, ignore_errors=True)
 

@@ -4,12 +4,12 @@ import pytest
 from playwright.async_api import Error as PlaywrightError
 
 import pravda.pravda as pravda_module
-from pravda import InfrastructureError, Pravda, Timeouts
+from pravda import InfrastructureError, Liveness, Pravda, Timeouts
 from pravda.capture import capture_page
 from tests.helpers import fulfill_html
 
 
-async def _record_example(browser, tmp_path):
+async def _record_example(browser, tmp_path, timeouts: Timeouts):
     http_archive_path = tmp_path / "record.zip"
     context = await browser.new_context(
         record_har_path=str(http_archive_path),
@@ -17,14 +17,14 @@ async def _record_example(browser, tmp_path):
     )
     page = await context.new_page()
     await page.route("https://example.com", fulfill_html)
-    result = await capture_page(page, "https://example.com", Timeouts())
+    result = await capture_page(page, "https://example.com", timeouts)
     return context, result, http_archive_path
 
 
 @pytest.mark.asyncio
-async def test_context_close_failure_raises(browser, storage, tmp_path):
+async def test_context_close_failure_raises(browser, storage, tmp_path, timeouts):
     """A context.close failure is infrastructure: it raises, persisting nothing."""
-    context, captured, path = await _record_example(browser, tmp_path)
+    context, captured, path = await _record_example(browser, tmp_path, timeouts)
 
     async def failing_close():
         raise OSError("context teardown lost the connection")
@@ -34,9 +34,7 @@ async def test_context_close_failure_raises(browser, storage, tmp_path):
         InfrastructureError,
         match="browser context close failed: context teardown lost the connection",
     ):
-        await pravda_module._finalize_capture(
-            context, captured, path, storage, close_timeout=30.0
-        )
+        await pravda_module._close_context(context, Liveness())
 
 
 @pytest.mark.asyncio
