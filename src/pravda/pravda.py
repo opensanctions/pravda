@@ -132,16 +132,19 @@ async def _persist_snapshot(
     )
     async with sessionmaker() as session:
         session.add(record)
+        # Commit may expire the record; build the snapshot first.
+        await session.flush()
+        snapshot = from_record(record, storage)
         await session.commit()
     logger.info(
         "Captured %s id=%s: status=%s http_archive=%s error=%s",
-        record.url,
-        record.id,
-        record.http_status,
-        record.http_archive is not None,
-        record.error,
+        snapshot.url,
+        snapshot.id,
+        snapshot.http_status,
+        snapshot.http_archive is not None,
+        snapshot.error,
     )
-    return from_record(record, storage)
+    return snapshot
 
 
 async def _capture(
@@ -205,10 +208,9 @@ async def _capture(
 class Pravda:
     """Configured async entry point for capture and snapshot history.
 
-    The application owns the database engine and its ``async_sessionmaker``,
-    which must be configured with ``expire_on_commit=False``. Each concurrent
-    capture owns its browser connection, recording context, temporary
-    directory, and database session.
+    The application owns the database engine and its ``async_sessionmaker``.
+    Each concurrent capture owns its browser connection, recording context,
+    temporary directory, and database session.
     """
 
     def __init__(

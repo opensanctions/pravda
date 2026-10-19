@@ -25,8 +25,8 @@ pip install opensanctions-pravda
 
 ## Quick start
 
-The application owns the SQLAlchemy engine and an `async_sessionmaker`
-configured with `expire_on_commit=False`; construct a
+The application owns the SQLAlchemy engine and an `async_sessionmaker`;
+construct a
 [`PravdaConfig`](#configuration) for the remaining settings and build a
 long-lived `Pravda`. Reuse a single instance across captures — each capture
 opens its own browser connection and database session — and dispose the engine
@@ -69,9 +69,6 @@ application-owned `async_sessionmaker` passed to `Pravda`:
   context, and its expiry propagates to the caller like any other browser
   connection failure. `close` bounds closing the context, and its expiry
   fails the snapshot. Both are seconds, default 30.
-
-The session factory must use `expire_on_commit=False`, because Pravda reads
-persisted snapshots after commit.
 
 ## Usage
 

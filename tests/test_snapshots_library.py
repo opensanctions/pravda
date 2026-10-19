@@ -28,8 +28,9 @@ async def _commit_snapshot(
     http_archive: dict | None = None,
 ) -> uuid.UUID:
     """Insert and commit a snapshot through the test sessionmaker fixture."""
+    record_id = uuid.uuid4()
     record = SnapshotRecord(
-        id=uuid.uuid4(),
+        id=record_id,
         url=url,
         captured_at=captured_at,
         http_status=http_status,
@@ -42,7 +43,7 @@ async def _commit_snapshot(
     async with sessionmaker() as session:
         session.add(record)
         await session.commit()
-    return record.id
+    return record_id
 
 
 @pytest.mark.asyncio
