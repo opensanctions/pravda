@@ -7,17 +7,17 @@ bodies. Snapshots are
 recorded in a SQL database (PostgreSQL or SQLite) and on any fsspec-compatible
 backend for later inspection or comparison.
 
-Applications own the browser, database, and storage backend (see
-[Infrastructure](#infrastructure)).
+Applications own the browser, database, and storage backend.
 
-- **Python** 3.12+
-- **Browser**: a remote Playwright Chromium WebSocket endpoint (headed Chrome
-  under xvfb).
+- **Browser**: a remote Playwright Chromium WebSocket endpoint (e.g. headed
+  Chrome under xvfb).
 - **Database**: PostgreSQL or SQLite.
 - **Storage**: any fsspec URL (local path, `s3://`, `gs://`, …) for
   content-addressed artifacts.
 
 ## Installation
+
+**Python** 3.12+
 
 ```bash
 pip install opensanctions-pravda
@@ -53,9 +53,6 @@ async def capture_example():
 
 ## Configuration
 
-`PravdaConfig` takes three settings, supplied explicitly per instance, plus an
-application-owned `async_sessionmaker` passed to `Pravda`:
-
 - `browser_ws_url` — remote Playwright WebSocket URL.
 - `storage_base_path` — fsspec storage URL, such as `./data`, `s3://bucket`,
   or `gs://bucket`.
@@ -64,9 +61,7 @@ application-owned `async_sessionmaker` passed to `Pravda`:
   budget does on expiry. Override individual fields with
   `dataclasses.replace(Timeouts(), load=60)`.
 - `liveness` — a frozen `Liveness` of deadlines for Pravda's own browser
-  machinery; expiry is infrastructure failure, not evidence about the
-  captured website, and raises `pravda.InfrastructureError` persisting
-  nothing. `setup` bounds connecting and preparing the recording context;
+  machinery. `setup` bounds connecting and preparing the recording context;
   `close` bounds closing it, which finalizes the recording. Both are
   seconds, default 30.
 
@@ -81,13 +76,7 @@ database hangs until the caller cancels. Browser machinery — connecting,
 preparing, or closing the recording context — is Pravda's infrastructure,
 not the target: its failures raise `InfrastructureError` and persist
 nothing, with a wedged-but-alive endpoint failing at the `liveness`
-deadlines:
-
-```python
-async def capture_example():
-    pravda = Pravda(config, sessionmaker)
-    snapshot = await pravda.snapshot("https://example.com")
-```
+deadlines.
 
 For custom navigation or interaction, pass an async `drive(page, url)`
 callback. The callback owns the initial navigation; Pravda owns capture,
@@ -108,10 +97,9 @@ async def capture_results():
 from `drive` are persisted as failed snapshots. Other callback exceptions
 propagate and persist nothing.
 
-Chrome is configured to download PDFs instead of opening its viewer. In custom
-callbacks, `page.goto()` may therefore raise `Download is starting`; catch
-that Playwright error if the download is expected. Pravda recovers the
-downloaded body into the HAR.
+When the browser endpoint sends PDFs as downloads, `page.goto()` in custom
+callbacks may raise `Download is starting`; catch that Playwright error if
+the download is expected. Pravda recovers the downloaded body into the HAR.
 
 ### Query history
 
@@ -127,7 +115,7 @@ async def print_history():
 
 ## Storage
 
-Artifacts are content-addressed files organized under the captured URL's
+Artifacts are content-addressed files organized under the captured page's
 hostname. The public `Snapshot` resolves its artifact fields to full storage
 paths: `rendered_html`, `screenshot`, and `standalone_html` point at stored
 files, and each HAR `response.content._file` resolves to its stored response
@@ -137,18 +125,8 @@ derived from the rendered DOM and the recorded HAR bodies for direct
 inspection; derivation failures drop only that artifact.
 Persisted database fields and HAR values keep their relative, content-addressed
 names; consumers read the resolved paths directly from the shared fsspec
-backend. Storage failures propagate, and no snapshot record is persisted.
-
-## Infrastructure
-
-Applications own the external infrastructure Pravda talks to:
-
-- **Browser** — a remote Playwright Chromium server exposed over WebSocket,
-  such as the Playwright Docker image running headed Chrome under xvfb, or a
-  hosted browser service.
-- **Database** — a PostgreSQL or SQLite database, accessed through an async
-  SQLAlchemy engine.
-- **Storage** — an fsspec backend, selected via `storage_base_path`.
+backend. Other storage failures propagate, and no snapshot record is
+persisted.
 
 ## Development
 
