@@ -28,7 +28,7 @@ def _pravda(sessionmaker, tmp_path, **budgets: float) -> Pravda:
 
 @pytest.mark.asyncio
 async def test_snapshot_drive_timeout_persists_failed_attempt(sessionmaker, tmp_path):
-    pravda = _pravda(sessionmaker, tmp_path, drive_milliseconds=200)
+    pravda = _pravda(sessionmaker, tmp_path, drive=0.2)
 
     async def drive(page, url):
         await asyncio.sleep(5)
@@ -47,7 +47,7 @@ async def test_snapshot_wall_clock_timeout_persists_failed_attempt(
     sessionmaker, tmp_path
 ):
     """The wall-clock breaker expires while no inner budget has."""
-    pravda = _pravda(sessionmaker, tmp_path, snapshot_milliseconds=200)
+    pravda = _pravda(sessionmaker, tmp_path, snapshot=0.2)
 
     async def drive(page, url):
         await asyncio.sleep(5)

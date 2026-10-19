@@ -168,15 +168,14 @@ async def _capture(
 
             try:
                 try:
-                    async with asyncio.timeout(timeouts.snapshot_milliseconds / 1000):
+                    async with asyncio.timeout(timeouts.snapshot):
                         if drive is None:
                             result = await capture_page(page, url, timeouts)
                         else:
                             result = await capture_driven(page, url, drive, timeouts)
                 except asyncio.TimeoutError as error:
                     raise _CaptureFailure(
-                        f"capture exceeded {timeouts.snapshot_milliseconds:g}ms"
-                        " wall-clock budget"
+                        f"capture exceeded {timeouts.snapshot:g}s wall-clock budget"
                     ) from error
 
                 artifacts = await _finalize_capture(

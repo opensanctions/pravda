@@ -105,7 +105,7 @@ async def test_http_commit_captured_when_load_times_out(page: Page):
         ),
     )
 
-    timeouts = replace(Timeouts(), load_milliseconds=2000)
+    timeouts = replace(Timeouts(), load=2)
     result = await capture_page(page, "https://slow.example.com", timeouts=timeouts)
 
     assert result.http_status == 200
@@ -130,7 +130,7 @@ async def test_capture_page_dom_capture_timeout_skips_content(page: Page):
 
     page.content = slow_content
 
-    timeouts = replace(Timeouts(), dom_capture_milliseconds=200)
+    timeouts = replace(Timeouts(), dom_capture=0.2)
     result = await capture_page(page, "https://example.com", timeouts=timeouts)
 
     assert result.http_status == 200
@@ -168,7 +168,7 @@ async def test_capture_page_never_settling_dom_drops_html(page: Page):
             headers={"content-type": "text/html"},
         ),
     )
-    timeouts = replace(Timeouts(), dom_capture_milliseconds=1500)
+    timeouts = replace(Timeouts(), dom_capture=1.5)
     result = await capture_page(page, "https://example.com", timeouts=timeouts)
 
     assert result.http_status == 200
@@ -193,8 +193,8 @@ async def test_capture_page_hanging_font_drops_screenshot(page: Page):
     )
     timeouts = replace(
         Timeouts(),
-        load_milliseconds=2000,
-        screenshot_milliseconds=1500,
+        load=2,
+        screenshot=1.5,
     )
     result = await capture_page(page, "https://example.com", timeouts=timeouts)
 

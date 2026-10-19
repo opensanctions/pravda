@@ -62,7 +62,7 @@ application-owned `async_sessionmaker` passed to `Pravda`:
 - `timeouts` — a frozen `Timeouts` of wall-clock budgets for the captured
   website, defaulting to sensible values; see its docstring for what each
   budget does on expiry. Override individual fields with
-  `dataclasses.replace(Timeouts(), load_milliseconds=60_000)`.
+  `dataclasses.replace(Timeouts(), load=60)`.
 
 The session factory must use `expire_on_commit=False`, because Pravda reads
 persisted snapshots after commit.

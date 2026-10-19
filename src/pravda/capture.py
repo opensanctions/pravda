@@ -87,7 +87,7 @@ class _PageObserver:
     async def wait_download(self, url: str, timeouts: Timeouts) -> Download:
         """Wait up to the download budget for the first download."""
         try:
-            async with asyncio.timeout(timeouts.download_milliseconds / 1000):
+            async with asyncio.timeout(timeouts.download):
                 await self._download_seen.wait()
         except asyncio.TimeoutError as error:
             raise PlaywrightError(f"Download event did not fire for {url}") from error
@@ -137,11 +137,11 @@ async def _navigate(page: Page, url: str, timeouts: Timeouts) -> _Navigation:
     final_url: str | None = None
     try:
         response = await page.goto(
-            url, wait_until="commit", timeout=timeouts.nav_milliseconds
+            url, wait_until="commit", timeout=timeouts.nav * 1000
         )
         http_status = response.status
         final_url = page.url
-        await page.wait_for_load_state("load", timeout=timeouts.load_milliseconds)
+        await page.wait_for_load_state("load", timeout=timeouts.load * 1000)
         return _Navigation(
             http_status=http_status,
             error=None,
@@ -172,7 +172,7 @@ async def _capture_artifacts(
 ) -> tuple[str | None, bytes | None]:
     """Wait for the DOM to settle, then capture its HTML and screenshot."""
     try:
-        async with asyncio.timeout(timeouts.dom_capture_milliseconds / 1000):
+        async with asyncio.timeout(timeouts.dom_capture):
             # Attribute changes re-arm the quiet timer alongside structural ones:
             # late framework re-renders toggle layout classes long after load.
             await page.evaluate(
@@ -194,7 +194,7 @@ async def _capture_artifacts(
                     });
                 })
                 """,
-                timeouts.dom_settle_quiet_milliseconds,
+                timeouts.dom_settle_quiet * 1000,
             )
             html = await page.content()
     except (asyncio.TimeoutError, PlaywrightTimeout):
@@ -215,7 +215,7 @@ async def _capture_artifacts(
         screenshot = await page.screenshot(
             full_page=True,
             clip=screenshot_clip,
-            timeout=timeouts.screenshot_milliseconds,
+            timeout=timeouts.screenshot * 1000,
         )
     except PlaywrightTimeout:
         logger.warning("Timeout capturing screenshot for %s", page.url)
@@ -259,11 +259,11 @@ async def capture_driven(
     """Run *drive*, then capture the resulting HTTP(S) page or download."""
     async with _PageObserver(page) as observer:
         try:
-            async with asyncio.timeout(timeouts.drive_milliseconds / 1000):
+            async with asyncio.timeout(timeouts.drive):
                 await drive(page, url)
         except asyncio.TimeoutError as error:
             raise DriveTimeoutError(
-                f"drive callback exceeded {timeouts.drive_milliseconds:g}ms budget"
+                f"drive callback exceeded {timeouts.drive:g}s budget"
             ) from error
 
         if (
@@ -298,7 +298,7 @@ async def _save_download(download: Download, timeouts: Timeouts) -> DownloadedBo
     try:
         with tempfile.TemporaryDirectory() as download_dir:
             download_path = Path(download_dir) / "download"
-            async with asyncio.timeout(timeouts.download_milliseconds / 1000):
+            async with asyncio.timeout(timeouts.download):
                 await download.save_as(str(download_path))
                 return DownloadedBody(
                     url=download.url,
@@ -307,6 +307,5 @@ async def _save_download(download: Download, timeouts: Timeouts) -> DownloadedBo
                 )
     except asyncio.TimeoutError as error:
         raise PlaywrightError(
-            f"Download save exceeded {timeouts.download_milliseconds:g}ms budget"
-            f" for {download.url}"
+            f"Download save exceeded {timeouts.download:g}s budget for {download.url}"
         ) from error
