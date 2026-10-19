@@ -29,13 +29,17 @@ from pravda.storage import Storage
 
 logger = logging.getLogger(__name__)
 
-# Capture and finalization form one atomic evidence operation: a context-close
-# failure invalidates the result, while standalone-HTML derivation failures
-# drop only that artifact.
+# Persisted snapshots record target-facing outcomes; browser machinery
+# failures raise and persist nothing. Evidence finalizes atomically, except
+# standalone-HTML derivation failures, which drop only that artifact.
+
+
+class InfrastructureError(Exception):
+    """Pravda's browser machinery failed; nothing was persisted."""
 
 
 class _CaptureFailure(Exception):
-    """A browser failure that should be persisted without evidence."""
+    """The target-facing capture exceeded its wall-clock budget."""
 
 
 @dataclass
@@ -59,16 +63,16 @@ async def _finalize_capture(
         async with asyncio.timeout(close_timeout):
             await context.close()
     except TimeoutError as error:
-        raise _CaptureFailure(
+        raise InfrastructureError(
             f"browser context close exceeded {close_timeout:g}s budget"
         ) from error
     except Exception as error:
-        raise _CaptureFailure(f"browser context close failed: {error}") from error
+        raise InfrastructureError(f"browser context close failed: {error}") from error
 
     if result.http_status is None:
         return StoredArtifacts()
     if not http_archive_path.exists():
-        raise _CaptureFailure(
+        raise InfrastructureError(
             "browser context closed without producing an HTTP archive"
         )
 
@@ -87,7 +91,7 @@ async def _finalize_capture(
         http_archive_path, result.final_url, storage, download=result.download
     )
     if http_archive is None:
-        raise _CaptureFailure("browser context produced an invalid HTTP archive")
+        raise InfrastructureError("browser context produced an invalid HTTP archive")
 
     standalone_html = None
     if result.html is not None:
@@ -163,9 +167,9 @@ async def _capture(
     try:
         async with async_playwright() as playwright:
             # Connection setup is Pravda's machinery, not the target: its
-            # failures propagate and persist nothing. No browser.close()
-            # either — stopping the driver disconnects, and the endpoint
-            # closes this connection's contexts and browsers on disconnect.
+            # failures raise and persist nothing. No browser.close() either —
+            # stopping the driver disconnects, and the endpoint closes this
+            # connection's contexts and browsers on disconnect.
             try:
                 async with asyncio.timeout(liveness.setup):
                     browser = await playwright.chromium.connect(browser_ws_url)
@@ -176,8 +180,12 @@ async def _capture(
                     )
                     page = await context.new_page()
             except TimeoutError as error:
-                raise PlaywrightError(
+                raise InfrastructureError(
                     f"browser connection setup exceeded {liveness.setup:g}s budget"
+                ) from error
+            except Exception as error:
+                raise InfrastructureError(
+                    f"browser connection setup failed: {error}"
                 ) from error
 
             try:
@@ -234,7 +242,9 @@ class Pravda:
         recording page; Pravda then captures its current state. The first
         download triggered by the callback becomes the capture subject.
 
-        A wedged-but-alive browser endpoint fails at the liveness deadlines
+        Browser machinery failures — connecting, preparing, or closing the
+        recording context — raise :class:`InfrastructureError` and persist
+        nothing; a wedged-but-alive endpoint fails at the liveness deadlines
         on ``PravdaConfig.liveness`` (seconds, default 30 each). A
         wedged-but-alive storage backend or database hangs until the caller
         cancels, and cancellation persists nothing.

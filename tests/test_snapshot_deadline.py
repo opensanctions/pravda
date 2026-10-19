@@ -6,10 +6,9 @@ from dataclasses import replace
 
 import pytest
 from playwright.async_api import BrowserContext, BrowserType
-from playwright.async_api import Error as PlaywrightError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from pravda import Liveness, Pravda, PravdaConfig, Timeouts
+from pravda import InfrastructureError, Liveness, Pravda, PravdaConfig, Timeouts
 from tests.helpers import fulfill_html
 
 
@@ -75,14 +74,14 @@ async def test_setup_timeout_propagates_without_persisting(
 
     monkeypatch.setattr(BrowserType, "connect", slow_connect)
 
-    with pytest.raises(PlaywrightError, match="setup"):
+    with pytest.raises(InfrastructureError, match="setup"):
         await pravda.snapshot("https://example.com", drive=_drive_example)
 
     assert await pravda.snapshots("https://example.com") == []
 
 
 @pytest.mark.asyncio
-async def test_context_close_timeout_discards_evidence(
+async def test_context_close_timeout_raises_without_persisting(
     sessionmaker, tmp_path, monkeypatch
 ):
     pravda = _pravda(sessionmaker, tmp_path, liveness=Liveness(close=0.2))
@@ -91,13 +90,10 @@ async def test_context_close_timeout_discards_evidence(
         await asyncio.sleep(5)
 
     monkeypatch.setattr(BrowserContext, "close", slow_close)
-    snapshot = await pravda.snapshot("https://example.com", drive=_drive_example)
+    with pytest.raises(InfrastructureError, match="context close"):
+        await pravda.snapshot("https://example.com", drive=_drive_example)
 
-    assert "context close" in snapshot.error
-    assert snapshot.http_status is None
-    assert snapshot.final_url is None
-    assert snapshot.rendered_html is None
-    assert snapshot.screenshot is None
+    assert await pravda.snapshots("https://example.com") == []
 
 
 def test_liveness_deadlines_must_be_positive():

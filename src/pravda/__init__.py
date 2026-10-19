@@ -21,14 +21,16 @@ an application-owned async session factory::
 Applications own the database engine and dispose it on shutdown.
 
 Capture budgets bound the target website only and default to ``Timeouts()``;
-browser machinery liveness deadlines default to ``Liveness()``.
+browser machinery liveness deadlines default to ``Liveness()``. Browser
+machinery failures raise :class:`InfrastructureError` and persist nothing.
 """
 
 from pravda.config import Liveness, PravdaConfig, Timeouts
-from pravda.pravda import Pravda
+from pravda.pravda import InfrastructureError, Pravda
 from pravda.snapshots import Snapshot
 
 __all__ = [
+    "InfrastructureError",
     "Liveness",
     "Pravda",
     "PravdaConfig",

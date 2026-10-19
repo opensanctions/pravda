@@ -38,13 +38,12 @@ class Liveness:
     """Deadlines for Pravda's own browser machinery, in seconds.
 
     Unlike :class:`Timeouts`, expiry says nothing about the target: a
-    wedged-but-alive endpoint, not a slow website.
+    wedged-but-alive endpoint, not a slow website. Both deadlines raise
+    :class:`~pravda.InfrastructureError` and persist nothing.
 
         setup: Connecting to the endpoint and preparing the recording
-            context; expiry propagates to the caller like any other browser
-            connection failure.
-        close: Closing the recording context; an unfinalized recording
-            invalidates all evidence, so expiry fails the snapshot.
+            context.
+        close: Closing the recording context, which finalizes its recording.
     """
 
     setup: float = 30.0

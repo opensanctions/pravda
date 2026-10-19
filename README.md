@@ -65,10 +65,10 @@ application-owned `async_sessionmaker` passed to `Pravda`:
   `dataclasses.replace(Timeouts(), load=60)`.
 - `liveness` — a frozen `Liveness` of deadlines for Pravda's own browser
   machinery; expiry is infrastructure failure, not evidence about the
-  captured website. `setup` bounds connecting and preparing the recording
-  context, and its expiry propagates to the caller like any other browser
-  connection failure. `close` bounds closing the context, and its expiry
-  fails the snapshot. Both are seconds, default 30.
+  captured website, and raises `pravda.InfrastructureError` persisting
+  nothing. `setup` bounds connecting and preparing the recording context;
+  `close` bounds closing it, which finalizes the recording. Both are
+  seconds, default 30.
 
 ## Usage
 
@@ -77,10 +77,11 @@ application-owned `async_sessionmaker` passed to `Pravda`:
 By default, Pravda navigates to the URL, waits for the normal `load` state,
 captures the evidence, and persists the result. The target-facing capture is
 bounded by one wall-clock budget; a wedged-but-alive storage backend or
-database hangs until the caller cancels. A wedged-but-alive browser endpoint
-fails at the `liveness` deadlines. A connection failure to the browser
-endpoint is Pravda's infrastructure, not the target: it propagates to the
-caller and persists nothing:
+database hangs until the caller cancels. Browser machinery — connecting,
+preparing, or closing the recording context — is Pravda's infrastructure,
+not the target: its failures raise `InfrastructureError` and persist
+nothing, with a wedged-but-alive endpoint failing at the `liveness`
+deadlines:
 
 ```python
 async def capture_example():
@@ -104,9 +105,8 @@ async def capture_results():
 ```
 
 `page` is a real `playwright.async_api.Page`. Playwright errors and timeouts
-from `drive` are persisted as failed snapshots. A recording-context
-close failure also persists a failed snapshot without artifacts because its HAR
-could not be finalized. Other callback exceptions propagate and persist nothing.
+from `drive` are persisted as failed snapshots. Other callback exceptions
+propagate and persist nothing.
 
 Chrome is configured to download PDFs instead of opening its viewer. In custom
 callbacks, `page.goto()` may therefore raise `Download is starting`; catch

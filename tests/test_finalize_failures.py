@@ -1,10 +1,10 @@
-"""Atomic failure semantics for HAR finalization."""
+"""Finalization failures raise and persist nothing."""
 
 import pytest
 from playwright.async_api import Error as PlaywrightError
 
 import pravda.pravda as pravda_module
-from pravda import Pravda, Timeouts
+from pravda import InfrastructureError, Pravda, Timeouts
 from pravda.capture import capture_page
 from tests.helpers import fulfill_html
 
@@ -22,8 +22,8 @@ async def _record_example(browser, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_context_close_failure_discards_evidence(browser, storage, tmp_path):
-    """An unfinalized recording context invalidates all captured evidence."""
+async def test_context_close_failure_raises(browser, storage, tmp_path):
+    """A context.close failure is infrastructure: it raises, persisting nothing."""
     context, captured, path = await _record_example(browser, tmp_path)
 
     async def failing_close():
@@ -31,7 +31,7 @@ async def test_context_close_failure_discards_evidence(browser, storage, tmp_pat
 
     context.close = failing_close
     with pytest.raises(
-        pravda_module._CaptureFailure,
+        InfrastructureError,
         match="browser context close failed: context teardown lost the connection",
     ):
         await pravda_module._finalize_capture(

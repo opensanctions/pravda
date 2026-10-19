@@ -4,10 +4,9 @@ from pathlib import Path
 
 import pytest
 from playwright.async_api import Browser, Page
-from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import TimeoutError as PlaywrightTimeout
 
-from pravda import Pravda, PravdaConfig, Timeouts
+from pravda import InfrastructureError, Pravda, PravdaConfig, Timeouts
 from pravda.capture import _save_download, capture_page
 from tests.helpers import FIXTURES, fulfill_html, fulfill_pdf
 
@@ -31,7 +30,7 @@ async def test_snapshot_unreachable_browser_propagates(sessionmaker, tmp_path):
     )
     pravda = Pravda(config, sessionmaker)
 
-    with pytest.raises(PlaywrightError):
+    with pytest.raises(InfrastructureError):
         await pravda.snapshot("https://example.com")
 
     assert await pravda.snapshots("https://example.com") == []
