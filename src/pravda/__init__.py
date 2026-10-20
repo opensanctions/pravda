@@ -27,6 +27,7 @@ machinery failures raise :class:`InfrastructureError` and persist nothing.
 from pravda.config import Liveness, PravdaConfig, Timeouts
 from pravda.pravda import InfrastructureError, Pravda
 from pravda.snapshots import Snapshot
+from pravda.storage import Storage
 
 __all__ = [
     "InfrastructureError",
@@ -34,5 +35,6 @@ __all__ = [
     "Pravda",
     "PravdaConfig",
     "Snapshot",
+    "Storage",
     "Timeouts",
 ]

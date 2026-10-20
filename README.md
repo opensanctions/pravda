@@ -112,9 +112,7 @@ stylesheets inlined, images embedded as data URIs, active content sanitized —
 derived from the rendered DOM and the recorded HAR bodies for direct
 inspection; derivation failures drop only that artifact.
 Persisted database fields and HAR values keep their relative, content-addressed
-names; consumers read the resolved paths directly from the shared fsspec
-backend. Other storage failures propagate, and no snapshot record is
-persisted.
+names. Other storage failures propagate, and no snapshot record is persisted.
 
 ## Development
 

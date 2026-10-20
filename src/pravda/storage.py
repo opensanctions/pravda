@@ -76,3 +76,7 @@ class Storage:
         name = cas_name(data, ext)
         await self.put_blob(name, data, url)
         return name
+
+    async def read_blob(self, path: str) -> bytes:
+        """Return the bytes stored at *path*, a resolved artifact path."""
+        return await self.fs._cat_file(path)

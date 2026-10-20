@@ -130,4 +130,5 @@ async def test_snapshot_is_immutable(sessionmaker, tmp_path):
 def test_pravda_exports_public_names():
     assert pravda_pkg.Pravda is Pravda
     assert pravda_pkg.Snapshot is Snapshot
+    assert pravda_pkg.Storage is Storage
     assert callable(pravda_pkg.PravdaConfig)

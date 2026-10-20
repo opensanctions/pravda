@@ -41,6 +41,24 @@ async def test_put_artifact_names_and_stores_content_addressed(storage: Storage)
     assert path.read_bytes() == data
 
 
+@pytest.mark.asyncio
+async def test_read_blob_returns_stored_bytes(storage: Storage):
+    data = b"hello pravda"
+    url = "https://example.com/path"
+    name = await storage.put_blob(cas_name(data, "txt"), data, url)
+
+    # Reads the resolved path a Snapshot exposes.
+    path = Path(storage.content_prefix(url)) / name
+    assert await storage.read_blob(str(path)) == data
+
+
+@pytest.mark.asyncio
+async def test_read_blob_missing_path_raises(storage: Storage):
+    path = Path(storage.base_path) / "example.com" / "missing.txt"
+    with pytest.raises(FileNotFoundError):
+        await storage.read_blob(str(path))
+
+
 def test_content_prefix_joins_base_and_hostname(storage: Storage):
     assert storage.content_prefix("https://www.example.com:443/p") == (
         f"{storage.base_path}/example.com"
