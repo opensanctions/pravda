@@ -8,7 +8,7 @@ from playwright.async_api import TimeoutError as PlaywrightTimeout
 
 from pravda import InfrastructureError, Pravda, PravdaConfig, Timeouts
 from pravda.capture import _save_download, capture_page
-from tests.helpers import FIXTURES, fulfill_html, fulfill_pdf
+from tests.helpers import FIXTURES, fulfill_html, fulfill_pdf, snapshot_ids
 
 
 @pytest.fixture()
@@ -33,7 +33,7 @@ async def test_snapshot_unreachable_browser_propagates(sessionmaker, tmp_path):
     with pytest.raises(InfrastructureError):
         await pravda.snapshot("https://example.com")
 
-    assert await pravda.snapshots("https://example.com") == []
+    assert await snapshot_ids(sessionmaker, "https://example.com") == set()
 
 
 @pytest.mark.asyncio

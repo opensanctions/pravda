@@ -1,4 +1,4 @@
-"""Direct library tests for ``Pravda.snapshots()`` and the Snapshot dataclass."""
+"""Tests for the public ``Snapshot`` value and its mapping from records."""
 
 import dataclasses
 import os
@@ -44,77 +44,6 @@ async def _commit_snapshot(
         session.add(record)
         await session.commit()
     return record_id
-
-
-@pytest.mark.asyncio
-async def test_snapshots_returns_exact_url_matches_newest_first(
-    pravda: Pravda, sessionmaker
-):
-    url = "https://example.com"
-    older = await _commit_snapshot(
-        sessionmaker, url, datetime(2026, 1, 1, tzinfo=timezone.utc)
-    )
-    newer = await _commit_snapshot(
-        sessionmaker, url, datetime(2026, 1, 2, tzinfo=timezone.utc)
-    )
-    # A different URL must not appear in the results.
-    await _commit_snapshot(
-        sessionmaker,
-        "https://different.example",
-        datetime(2026, 1, 3, tzinfo=timezone.utc),
-    )
-
-    results = await pravda.snapshots(url)
-
-    assert [snapshot.id for snapshot in results] == [newer, older]
-
-
-@pytest.mark.asyncio
-async def test_snapshots_returns_public_dataclass_with_resolved_paths(
-    pravda: Pravda, sessionmaker, tmp_path
-):
-    url = "https://example.com"
-    await _commit_snapshot(
-        sessionmaker,
-        url,
-        datetime(2026, 1, 1, tzinfo=timezone.utc),
-        final_url="https://example.com/page",
-        rendered_html="a" * 40 + ".html",
-    )
-
-    result = (await pravda.snapshots(url))[0]
-
-    assert isinstance(result, Snapshot)
-    assert result.url == url
-    assert result.final_url == "https://example.com/page"
-    assert result.http_status == 200
-    prefix = os.path.join(str(tmp_path), "example.com")
-    assert result.rendered_html == os.path.join(prefix, "a" * 40 + ".html")
-    assert not hasattr(result, "prefix")
-
-
-@pytest.mark.asyncio
-async def test_snapshot_artifacts_are_none_when_navigation_never_committed(
-    pravda: Pravda, sessionmaker
-):
-    url = "https://example.com"
-    # No final_url: navigation never committed, no artifacts stored.
-    await _commit_snapshot(
-        sessionmaker,
-        url,
-        datetime(2026, 1, 1, tzinfo=timezone.utc),
-        final_url=None,
-        http_status=None,
-    )
-
-    result = (await pravda.snapshots(url))[0]
-
-    assert result.final_url is None
-    assert result.http_status is None
-    assert result.rendered_html is None
-    assert result.screenshot is None
-    assert result.standalone_html is None
-    assert result.http_archive is None
 
 
 @pytest.mark.asyncio
@@ -181,14 +110,21 @@ async def test_from_record_resolves_paths_without_mutating_persisted_record(
 
 
 @pytest.mark.asyncio
-async def test_snapshot_is_immutable(pravda: Pravda, sessionmaker):
+async def test_snapshot_is_immutable(sessionmaker, tmp_path):
     url = "https://example.com"
     await _commit_snapshot(sessionmaker, url, datetime(2026, 1, 1, tzinfo=timezone.utc))
 
-    result = (await pravda.snapshots(url))[0]
+    storage = Storage.from_url(str(tmp_path))
+    async with sessionmaker() as session:
+        record = (
+            await session.execute(
+                select(SnapshotRecord).where(SnapshotRecord.url == url)
+            )
+        ).scalar_one()
+        snapshot = from_record(record, storage)
 
     with pytest.raises(dataclasses.FrozenInstanceError):
-        result.url = "https://mutated.example"
+        snapshot.url = "https://mutated.example"
 
 
 def test_pravda_exports_public_names():

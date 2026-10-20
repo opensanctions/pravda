@@ -7,11 +7,17 @@ from playwright.async_api import Error as PlaywrightError
 
 import pravda.pravda as pravda_module
 from pravda import Pravda
-from tests.helpers import PNG_BYTES, fulfill_html, fulfill_pdf, fulfill_standalone
+from tests.helpers import (
+    PNG_BYTES,
+    fulfill_html,
+    fulfill_pdf,
+    fulfill_standalone,
+    snapshot_ids,
+)
 
 
 @pytest.mark.asyncio
-async def test_snapshot_persists_failed_attempt(pravda: Pravda):
+async def test_snapshot_persists_failed_attempt(pravda: Pravda, sessionmaker):
     """A default capture of an unreachable URL persists a failed snapshot."""
     snapshot = await pravda.snapshot("https://localhost:39999/")
 
@@ -24,12 +30,11 @@ async def test_snapshot_persists_failed_attempt(pravda: Pravda):
     assert snapshot.http_archive is None
     assert snapshot.standalone_html is None
 
-    history = await pravda.snapshots("https://localhost:39999/")
-    assert any(item.id == snapshot.id for item in history)
+    assert snapshot.id in await snapshot_ids(sessionmaker, "https://localhost:39999/")
 
 
 @pytest.mark.asyncio
-async def test_snapshot_drive_navigates_and_captures(pravda: Pravda):
+async def test_snapshot_drive_navigates_and_captures(pravda: Pravda, sessionmaker):
     """A drive callback routes and navigates; Pravda captures and persists."""
 
     async def drive(page, url):
@@ -48,8 +53,7 @@ async def test_snapshot_drive_navigates_and_captures(pravda: Pravda):
     html = Path(snapshot.rendered_html).read_text()
     assert "Hello from Pravda" in html
 
-    history = await pravda.snapshots("https://example.com")
-    assert any(item.id == snapshot.id for item in history)
+    assert snapshot.id in await snapshot_ids(sessionmaker, "https://example.com")
 
 
 @pytest.mark.asyncio
@@ -181,7 +185,9 @@ async def test_snapshot_drive_download_uses_download_url_and_skips_blank_page(
 
 
 @pytest.mark.asyncio
-async def test_snapshot_drive_playwright_error_persists_failed_attempt(pravda: Pravda):
+async def test_snapshot_drive_playwright_error_persists_failed_attempt(
+    pravda: Pravda, sessionmaker
+):
     """A Playwright error from the drive callback persists as a failed attempt."""
 
     async def drive(page, url):
@@ -198,8 +204,7 @@ async def test_snapshot_drive_playwright_error_persists_failed_attempt(pravda: P
     assert snapshot.http_archive is None
     assert snapshot.standalone_html is None
 
-    history = await pravda.snapshots("https://localhost:39999/")
-    assert any(item.id == snapshot.id for item in history)
+    assert snapshot.id in await snapshot_ids(sessionmaker, "https://localhost:39999/")
 
 
 @pytest.mark.asyncio
@@ -213,16 +218,16 @@ async def test_snapshot_drive_playwright_error_persists_failed_attempt(pravda: P
         "https:///missing-host",
     ],
 )
-async def test_snapshot_rejects_non_http_url(pravda: Pravda, url: str):
+async def test_snapshot_rejects_non_http_url(pravda: Pravda, sessionmaker, url: str):
     """A non-http(s) URL is rejected before any browser or database work."""
     with pytest.raises(ValueError, match="must be http"):
         await pravda.snapshot(url)
 
-    assert await pravda.snapshots(url) == []
+    assert await snapshot_ids(sessionmaker, url) == set()
 
 
 @pytest.mark.asyncio
-async def test_snapshot_drive_rejects_non_http_final_url(pravda: Pravda):
+async def test_snapshot_drive_rejects_non_http_final_url(pravda: Pravda, sessionmaker):
     """A drive callback ending on a non-HTTP(S) URL raises ValueError."""
 
     async def drive(page, url):
@@ -231,23 +236,24 @@ async def test_snapshot_drive_rejects_non_http_final_url(pravda: Pravda):
     with pytest.raises(ValueError, match="non-HTTP"):
         await pravda.snapshot("https://example.com", drive=drive)
 
-    assert await pravda.snapshots("https://example.com") == []
+    assert await snapshot_ids(sessionmaker, "https://example.com") == set()
 
 
 @pytest.mark.asyncio
-async def test_snapshot_drive_requires_navigation(pravda: Pravda):
+async def test_snapshot_drive_requires_navigation(pravda: Pravda, sessionmaker):
     async def drive(page, url):
         pass
 
     with pytest.raises(ValueError, match="before navigating"):
         await pravda.snapshot("https://example.com", drive=drive)
 
-    assert await pravda.snapshots("https://example.com") == []
+    assert await snapshot_ids(sessionmaker, "https://example.com") == set()
 
 
 @pytest.mark.asyncio
 async def test_snapshot_drive_arbitrary_error_propagates_and_persists_nothing(
     pravda: Pravda,
+    sessionmaker,
 ):
     """A non-Playwright drive-callback exception propagates and persists nothing."""
 
@@ -259,7 +265,7 @@ async def test_snapshot_drive_arbitrary_error_propagates_and_persists_nothing(
     with pytest.raises(ValueError, match="caller bug"):
         await pravda.snapshot("https://example.com", drive=drive)
 
-    assert await pravda.snapshots("https://example.com") == []
+    assert await snapshot_ids(sessionmaker, "https://example.com") == set()
 
 
 @pytest.mark.asyncio

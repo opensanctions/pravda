@@ -6,7 +6,7 @@ from playwright.async_api import Error as PlaywrightError
 import pravda.pravda as pravda_module
 from pravda import InfrastructureError, Liveness, Pravda, Timeouts
 from pravda.capture import capture_page
-from tests.helpers import fulfill_html
+from tests.helpers import fulfill_html, snapshot_ids
 
 
 async def _record_example(browser, tmp_path, timeouts: Timeouts):
@@ -52,7 +52,7 @@ async def test_missing_http_archive_raises(browser, storage, tmp_path, timeouts)
 
 @pytest.mark.asyncio
 async def test_snapshot_har_storage_failure_propagates_without_persisting(
-    pravda: Pravda, monkeypatch
+    pravda: Pravda, sessionmaker, monkeypatch
 ):
     """A storage failure during HAR processing propagates and persists nothing."""
 
@@ -80,4 +80,4 @@ async def test_snapshot_har_storage_failure_propagates_without_persisting(
     with pytest.raises(OSError, match="storage backend down"):
         await pravda.snapshot("https://example.com", drive=drive)
 
-    assert await pravda.snapshots("https://example.com") == []
+    assert await snapshot_ids(sessionmaker, "https://example.com") == set()

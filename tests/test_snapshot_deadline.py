@@ -9,7 +9,7 @@ from playwright.async_api import BrowserContext, BrowserType
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from pravda import InfrastructureError, Liveness, Pravda, PravdaConfig, Timeouts
-from tests.helpers import fulfill_html
+from tests.helpers import fulfill_html, snapshot_ids
 
 
 async def _drive_example(page, url):
@@ -77,7 +77,7 @@ async def test_setup_timeout_propagates_without_persisting(
     with pytest.raises(InfrastructureError, match="setup"):
         await pravda.snapshot("https://example.com", drive=_drive_example)
 
-    assert await pravda.snapshots("https://example.com") == []
+    assert await snapshot_ids(sessionmaker, "https://example.com") == set()
 
 
 @pytest.mark.asyncio
@@ -93,7 +93,7 @@ async def test_context_close_timeout_raises_without_persisting(
     with pytest.raises(InfrastructureError, match="context close"):
         await pravda.snapshot("https://example.com", drive=_drive_example)
 
-    assert await pravda.snapshots("https://example.com") == []
+    assert await snapshot_ids(sessionmaker, "https://example.com") == set()
 
 
 def test_liveness_deadlines_must_be_positive():
@@ -126,11 +126,11 @@ async def test_snapshot_wedged_persistence_bounded_by_caller(
     with pytest.raises(asyncio.TimeoutError):
         await asyncio.wait_for(capture, timeout=0.2)
 
-    assert await pravda.snapshots("https://example.com") == []
+    assert await snapshot_ids(sessionmaker, "https://example.com") == set()
 
 
 @pytest.mark.asyncio
-async def test_snapshot_cancellation_propagates(pravda: Pravda):
+async def test_snapshot_cancellation_propagates(pravda: Pravda, sessionmaker):
     started = asyncio.Event()
     block = asyncio.Event()
 
@@ -145,4 +145,4 @@ async def test_snapshot_cancellation_propagates(pravda: Pravda):
     with pytest.raises(asyncio.CancelledError):
         await task
 
-    assert await pravda.snapshots("https://example.com") == []
+    assert await snapshot_ids(sessionmaker, "https://example.com") == set()

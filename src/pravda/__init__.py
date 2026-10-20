@@ -16,7 +16,6 @@ an application-owned async session factory::
 
     pravda = Pravda(config, sessionmaker)
     snapshot = await pravda.snapshot(url)
-    history = await pravda.snapshots(url)
 
 Applications own the database engine and dispose it on shutdown.
 

@@ -19,7 +19,7 @@ Pravda is an async Python library for capturing durable web evidence with a remo
 
 ## Public behavior
 
-`Pravda` is a long-lived object that exposes async `snapshot()` and `snapshots()` methods.
+`Pravda` is a long-lived object that exposes an async `snapshot()` method.
 
 - Without `drive`, `snapshot()` owns navigation and the complete capture pipeline.
 - The target-facing capture must remain bounded by one wall-clock timeout.
@@ -30,7 +30,6 @@ Pravda is an async Python library for capturing durable web evidence with a remo
   and a wedged-but-alive dependency hangs until the caller cancels.
 - With `drive(page, url)`, the callback owns initial navigation and interaction; Pravda still owns capture, persistence, and cleanup.
 - Navigation, capture, and Playwright callback failures are persisted as failed snapshots; `Pravda` commits each capture attempt through the application-owned session factory. Browser connection setup and context close are Pravda's own infrastructure: their failures raise `InfrastructureError` and persist nothing, like storage and database failures. Non-Playwright callback exceptions propagate and persist nothing.
-- `snapshots(url)` returns all exact-URL matches newest first, without pagination.
 - Concurrent `snapshot()` calls are safe: each opens its own browser connection, recording context, temporary directory, and database session.
 
 ## Downloads

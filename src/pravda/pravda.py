@@ -1,4 +1,4 @@
-"""Configured browser capture and snapshot history."""
+"""Configured browser capture."""
 
 import asyncio
 import logging
@@ -9,7 +9,6 @@ from pathlib import Path
 
 from playwright.async_api import BrowserContext, async_playwright
 from playwright.async_api import Error as PlaywrightError
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from pravda.capture import (
@@ -217,7 +216,7 @@ async def _capture(
 
 
 class Pravda:
-    """Configured async entry point for capture and snapshot history.
+    """Configured async entry point for evidence capture.
 
     The application owns the database engine and its ``async_sessionmaker``.
     Each concurrent capture owns its browser connection, recording context,
@@ -263,14 +262,3 @@ class Pravda:
             timeouts=self._timeouts,
             liveness=self._liveness,
         )
-
-    async def snapshots(self, url: str) -> list[Snapshot]:
-        """Return all exact-URL matches, newest first."""
-        async with self._sessionmaker() as session:
-            result = await session.execute(
-                select(SnapshotRecord)
-                .where(SnapshotRecord.url == url)
-                .order_by(SnapshotRecord.captured_at.desc())
-            )
-            rows = result.scalars().all()
-            return [from_record(row, self._storage) for row in rows]

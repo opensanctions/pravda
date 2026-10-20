@@ -1,7 +1,12 @@
-"""Shared helpers for routing browser fixtures to fixture content."""
+"""Shared helpers for browser routing and reading persisted state."""
 
 import base64
+import uuid
 from pathlib import Path
+
+from sqlalchemy import select
+
+from pravda.db import SnapshotRecord
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -34,3 +39,12 @@ def fulfill_standalone(route):
         body=(FIXTURES / "standalone.html").read_text(),
         headers={"content-type": "text/html"},
     )
+
+
+async def snapshot_ids(sessionmaker, url: str) -> set[uuid.UUID]:
+    """Persisted snapshot ids for a URL, read the way applications do."""
+    async with sessionmaker() as session:
+        result = await session.execute(
+            select(SnapshotRecord.id).where(SnapshotRecord.url == url)
+        )
+        return set(result.scalars().all())

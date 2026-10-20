@@ -101,18 +101,6 @@ When the browser endpoint sends PDFs as downloads, `page.goto()` in custom
 callbacks may raise `Download is starting`; catch that Playwright error if
 the download is expected. Pravda recovers the downloaded body into the HAR.
 
-### Query history
-
-`snapshots(url)` returns all snapshots for an exact URL, newest first:
-
-```python
-async def print_history():
-    pravda = Pravda(config, sessionmaker)
-    history = await pravda.snapshots("https://example.com")
-    for snapshot in history:
-        print(snapshot.captured_at, snapshot.http_status)
-```
-
 ## Storage
 
 Artifacts are content-addressed files organized under the captured page's
