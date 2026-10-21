@@ -4,12 +4,10 @@ import asyncio
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
-from typing import TYPE_CHECKING
 
 from unmhtml import Document, Resource, to_standalone_html
 
-if TYPE_CHECKING:
-    from pravda.storage import Storage
+from pravda.storage import Storage
 
 
 @dataclass(frozen=True)
@@ -32,7 +30,7 @@ class Snapshot:
     screenshot: str | None
     http_archive: dict | None
 
-    async def derive_standalone_html(self, storage: "Storage") -> str:
+    async def derive_standalone_html(self, storage: Storage) -> str:
         """Derive a self-contained HTML rendering of this snapshot's page.
 
         Reads the snapshot's stored rendered HTML and recorded HAR bodies,

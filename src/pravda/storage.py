@@ -6,6 +6,7 @@ import logging
 import os
 import re
 from dataclasses import dataclass
+from typing import Self
 from urllib.parse import urlparse
 
 import fsspec
@@ -49,7 +50,7 @@ class Storage:
     base_path: str
 
     @classmethod
-    def from_url(cls, storage_base_path: str) -> "Storage":
+    def from_url(cls, storage_base_path: str) -> Self:
         """Build storage from an fsspec URL, wrapping synchronous backends."""
         fs, base_path = fsspec.core.url_to_fs(storage_base_path)
         if not fs.async_impl:
