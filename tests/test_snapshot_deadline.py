@@ -1,4 +1,4 @@
-"""Liveness and wall-clock bounds for ``Pravda.capture``."""
+"""Wall-clock budgets for ``Pravda.capture``."""
 
 import asyncio
 import os
@@ -7,7 +7,8 @@ from dataclasses import replace
 import pytest
 from playwright.async_api import BrowserContext, BrowserType
 
-from pravda import InfrastructureError, Liveness, Pravda, Timeouts
+import pravda.pravda as pravda_module
+from pravda import InfrastructureError, Pravda, Timeouts
 from tests.helpers import fulfill_html
 
 
@@ -16,13 +17,12 @@ async def _drive_example(page, url):
     await page.goto(url, wait_until="load")
 
 
-def _pravda(storage, liveness=None, **budgets: float) -> Pravda:
+def _pravda(storage, **budgets: float) -> Pravda:
     """A client with the given budget fields shrunk from the defaults."""
     return Pravda(
         os.environ["PRAVDA_TEST_BROWSER_WS_URL"],
         storage,
         timeouts=replace(Timeouts(), dom_settle_quiet=0.05, **budgets),
-        liveness=liveness or Liveness(),
     )
 
 
@@ -61,7 +61,8 @@ async def test_capture_wall_clock_timeout_returns_failed_snapshot(storage):
 
 @pytest.mark.asyncio
 async def test_setup_timeout_propagates(storage, monkeypatch):
-    pravda = _pravda(storage, liveness=Liveness(setup=0.2))
+    monkeypatch.setattr(pravda_module, "_SETUP_BUDGET", 0.2)
+    pravda = _pravda(storage)
 
     async def slow_connect(self, url, **kwargs):
         await asyncio.sleep(5)
@@ -73,20 +74,18 @@ async def test_setup_timeout_propagates(storage, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_context_close_timeout_raises(storage, monkeypatch):
-    pravda = _pravda(storage, liveness=Liveness(close=0.2))
+async def test_context_close_timeout_returns_failed_snapshot(storage, monkeypatch):
+    pravda = _pravda(storage, close=0.2)
 
     async def slow_close(self, **kwargs):
         await asyncio.sleep(5)
 
     monkeypatch.setattr(BrowserContext, "close", slow_close)
-    with pytest.raises(InfrastructureError, match="context close"):
-        await pravda.capture("https://example.com", drive=_drive_example)
+    snapshot = await pravda.capture("https://example.com", drive=_drive_example)
 
-
-def test_liveness_deadlines_must_be_positive():
-    with pytest.raises(ValueError, match="setup"):
-        Liveness(setup=0)
+    assert "context close" in snapshot.error
+    assert snapshot.http_status is None
+    assert snapshot.http_archive is None
 
 
 @pytest.mark.asyncio

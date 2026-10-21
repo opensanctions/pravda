@@ -40,16 +40,16 @@ artifact fields are storage-relative paths, read back with
 
 ## Configuration
 
-`Pravda(browser_ws_url, storage, *, timeouts, liveness)`:
+`Pravda(browser_ws_url, storage, *, timeouts)`:
 
-- `timeouts` — wall-clock budgets bounding the captured website. Defaults
-  are sensible; see the `Timeouts` docstring.
-- `liveness` — deadlines, in seconds (default 30), for Pravda's own
-  browser machinery: connecting, preparing, and closing the recording
-  context.
+- `timeouts` — wall-clock budgets bounding one capture attempt, closing
+  the recording context included. Defaults are sensible; see the
+  `Timeouts` docstring.
 
-Browser machinery failures raise `InfrastructureError` and capture
-nothing. Storage carries no budget; its failures propagate.
+A browser setup failure raises `InfrastructureError` and captures
+nothing — nothing about the URL was attempted. Every other failure,
+including closing the recording context, is returned as a failed
+snapshot. Storage carries no budget; its failures propagate.
 
 ## Usage
 
@@ -68,8 +68,9 @@ snapshot = await pravda.capture("https://example.com", drive=drive)
 ```
 
 The callback owns navigation; Pravda owns capture and cleanup. Playwright
-errors from `drive` are returned as failed snapshots with `error` set;
-other exceptions propagate and capture nothing. Viewer-handled downloads
+errors from `drive` are returned as failed snapshots with `error` set —
+Pravda cannot tell target, browser, and callback failures apart; other
+exceptions propagate and capture nothing. Viewer-handled downloads
 (e.g. PDFs) surface in `drive` as Playwright's `Download is starting`;
 Pravda recovers the body into the HAR.
 

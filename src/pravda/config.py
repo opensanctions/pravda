@@ -5,10 +5,11 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class Timeouts:
-    """Wall-clock budgets for the captured website, in seconds.
+    """Wall-clock budgets for one capture attempt, in seconds.
 
-    Expiry is recorded evidence — a returned failed snapshot, or a dropped
-    artifact — because "the page never loaded" is a finding about the target.
+    Expiry is recorded — a returned failed snapshot, or a dropped
+    artifact — because a failed attempt is a finding about the target,
+    or cannot be told from one.
 
         snapshot: One wall-clock bound over the whole target-facing capture;
             expiry fails the snapshot.
@@ -21,6 +22,9 @@ class Timeouts:
         dom_settle_quiet: How long the DOM must stay mutation-free before
             capture; a duration, not a ceiling.
         screenshot: The full-page screenshot; expiry drops it.
+        close: Closing the recording context, which finalizes its
+            recording; expiry fails the snapshot, because a page that
+            wedged the recording cannot be told from a wedged endpoint.
     """
 
     snapshot: float = 240.0
@@ -31,28 +35,4 @@ class Timeouts:
     dom_capture: float = 10.0
     dom_settle_quiet: float = 0.5
     screenshot: float = 15.0
-
-
-@dataclass(frozen=True)
-class Liveness:
-    """Deadlines for Pravda's own browser machinery, in seconds.
-
-    Unlike :class:`Timeouts`, expiry says nothing about the target: a
-    wedged-but-alive endpoint, not a slow website. Both deadlines raise
-    :class:`~pravda.InfrastructureError` and capture nothing.
-
-        setup: Connecting to the endpoint and preparing the recording
-            context.
-        close: Closing the recording context, which finalizes its recording.
-    """
-
-    setup: float = 30.0
     close: float = 30.0
-
-    def __post_init__(self) -> None:
-        for name in ("setup", "close"):
-            seconds = getattr(self, name)
-            if seconds <= 0:
-                raise ValueError(
-                    f"{name} must be a positive number of seconds, got {seconds!r}"
-                )

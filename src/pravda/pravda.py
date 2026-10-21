@@ -19,24 +19,36 @@ from pravda.capture import (
     capture_page,
     is_http_url,
 )
-from pravda.config import Liveness, Timeouts
+from pravda.config import Timeouts
 from pravda.http_archive import capture_http_archive
 from pravda.snapshots import Snapshot
 from pravda.storage import Storage
 
 logger = logging.getLogger(__name__)
 
-# Playwright has one Error type, so failures inside the target-facing
-# capture are returned as failed snapshots rather than raised: page
-# failure and browser noise ("Target crashed") can't be told apart.
+# A capture raises only when a failure is provably not about the URL:
+# browser setup, before anything is attempted (InfrastructureError), and
+# storage, which reports its own failures. Everything after the first
+# navigation — including finalizing the recording, where a wedged page
+# cannot be told from a wedged endpoint — is returned as a failed
+# snapshot for the caller to adjudicate.
+
+# Browser setup is Pravda's machinery, not a knob: connecting and
+# preparing the recording context carry one fixed liveness budget, in
+# seconds.
+_SETUP_BUDGET = 30.0
 
 
 class InfrastructureError(Exception):
-    """Pravda's browser machinery failed; nothing was captured."""
+    """The browser endpoint never came up; nothing about the URL was attempted."""
 
 
 class _CaptureFailure(Exception):
     """The target-facing capture exceeded its wall-clock budget."""
+
+
+class _FinalizationError(Exception):
+    """The recording could not be finalized; returned as a failed snapshot."""
 
 
 @dataclass
@@ -48,17 +60,17 @@ class StoredArtifacts:
     http_archive: dict | None = None
 
 
-async def _close_context(context: BrowserContext, liveness: Liveness) -> None:
+async def _close_context(context: BrowserContext, timeouts: Timeouts) -> None:
     """Close the recording context, finalizing its HAR on disk."""
     try:
-        async with asyncio.timeout(liveness.close):
+        async with asyncio.timeout(timeouts.close):
             await context.close()
     except TimeoutError as error:
-        raise InfrastructureError(
-            f"browser context close exceeded {liveness.close:g}s budget"
+        raise _FinalizationError(
+            f"browser context close exceeded {timeouts.close:g}s budget"
         ) from error
     except Exception as error:
-        raise InfrastructureError(f"browser context close failed: {error}") from error
+        raise _FinalizationError(f"browser context close failed: {error}") from error
 
 
 async def _store_artifacts(
@@ -68,7 +80,7 @@ async def _store_artifacts(
     if result.http_status is None:
         return StoredArtifacts()
     if not http_archive_path.exists():
-        raise InfrastructureError(
+        raise _FinalizationError(
             "browser context closed without producing an HTTP archive"
         )
 
@@ -87,7 +99,7 @@ async def _store_artifacts(
         http_archive_path, result.final_url, storage, download=result.download
     )
     if http_archive is None:
-        raise InfrastructureError("browser context produced an invalid HTTP archive")
+        raise _FinalizationError("browser context produced an invalid HTTP archive")
 
     return StoredArtifacts(
         rendered_html=rendered_html,
@@ -103,7 +115,6 @@ async def _capture(
     browser_ws_url: str,
     storage: Storage,
     timeouts: Timeouts,
-    liveness: Liveness,
 ) -> Snapshot:
     logger.info("Capturing %s", url)
 
@@ -114,7 +125,7 @@ async def _capture(
             # endpoint closes this connection's contexts and browsers on
             # disconnect.
             try:
-                async with asyncio.timeout(liveness.setup):
+                async with asyncio.timeout(_SETUP_BUDGET):
                     browser = await playwright.chromium.connect(browser_ws_url)
                     context = await browser.new_context(
                         record_har_path=str(http_archive_path),
@@ -123,7 +134,7 @@ async def _capture(
                     page = await context.new_page()
             except TimeoutError as error:
                 raise InfrastructureError(
-                    f"browser connection setup exceeded {liveness.setup:g}s budget"
+                    f"browser connection setup exceeded {_SETUP_BUDGET:g}s budget"
                 ) from error
             except Exception as error:
                 raise InfrastructureError(
@@ -141,13 +152,17 @@ async def _capture(
                     raise _CaptureFailure(
                         f"capture exceeded {timeouts.snapshot:g}s wall-clock budget"
                     ) from error
-            except (DriveTimeoutError, PlaywrightError, _CaptureFailure) as error:
+                await _close_context(context, timeouts)
+                artifacts = await _store_artifacts(result, http_archive_path, storage)
+            except (
+                DriveTimeoutError,
+                PlaywrightError,
+                _CaptureFailure,
+                _FinalizationError,
+            ) as error:
                 logger.error("Capture failed for %s: %s", url, error)
                 result = CaptureResult(error=str(error))
                 artifacts = StoredArtifacts()
-            else:
-                await _close_context(context, liveness)
-                artifacts = await _store_artifacts(result, http_archive_path, storage)
 
     snapshot = Snapshot(
         id=uuid.uuid4(),
@@ -185,12 +200,10 @@ class Pravda:
         storage: Storage,
         *,
         timeouts: Timeouts = Timeouts(),
-        liveness: Liveness = Liveness(),
     ) -> None:
         self._timeouts = timeouts
         self._storage = storage
         self._browser_ws_url = browser_ws_url
-        self._liveness = liveness
 
     async def capture(
         self, url: str, *, drive: DriveCallback | None = None
@@ -205,12 +218,13 @@ class Pravda:
         The snapshot is a value: persisting it — including failed
         captures, returned with ``error`` set — is the caller's policy.
 
-        Browser machinery failures — connecting, preparing, or closing the
-        recording context — raise :class:`InfrastructureError` and capture
-        nothing; a wedged-but-alive endpoint fails at the constructor's
-        ``liveness`` deadlines (seconds, default 30 each). A
-        wedged-but-alive storage backend hangs until the caller cancels,
-        and cancellation captures nothing.
+        A browser setup failure — connecting to the endpoint or preparing
+        the recording context, against a fixed liveness budget — raises
+        :class:`InfrastructureError` and captures nothing: nothing about
+        the URL was attempted. Every other failure, including closing
+        the recording context, is returned as a failed snapshot. Storage
+        carries no budget: a wedged-but-alive backend hangs until the
+        caller cancels, and cancellation captures nothing.
         """
         if not is_http_url(url):
             raise ValueError(f"capture URL must be http(s), got {url!r}")
@@ -220,5 +234,4 @@ class Pravda:
             browser_ws_url=self._browser_ws_url,
             storage=self._storage,
             timeouts=self._timeouts,
-            liveness=self._liveness,
         )

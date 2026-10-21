@@ -16,10 +16,10 @@ snapshots — including failed captures, returned with ``error`` set — is
 the application's policy: Pravda owns the browser, and the storage
 handle is the application's, shared by capture and later reads.
 
-Capture budgets bound the target website only and default to
-``Timeouts()``; browser machinery liveness deadlines default to
-``Liveness()``. Browser machinery failures raise
-:class:`InfrastructureError` and capture nothing.
+Capture budgets default to ``Timeouts()`` and bound one capture
+attempt, closing the recording context included. A browser setup
+failure raises :class:`InfrastructureError` and captures nothing; every
+other capture failure is returned with ``error`` set.
 
 Standalone HTML — a self-contained page rendering — is derived from a
 snapshot's stored evidence and stored as a content-addressed artifact
@@ -28,14 +28,13 @@ snapshot's stored evidence and stored as a content-addressed artifact
     path = await snapshot.derive_standalone_html(storage)
 """
 
-from pravda.config import Liveness, Timeouts
+from pravda.config import Timeouts
 from pravda.pravda import InfrastructureError, Pravda
 from pravda.snapshots import Snapshot
 from pravda.storage import Storage
 
 __all__ = [
     "InfrastructureError",
-    "Liveness",
     "Pravda",
     "Snapshot",
     "Storage",
