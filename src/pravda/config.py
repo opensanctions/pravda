@@ -56,13 +56,3 @@ class Liveness:
                 raise ValueError(
                     f"{name} must be a positive number of seconds, got {seconds!r}"
                 )
-
-
-@dataclass(frozen=True)
-class PravdaConfig:
-    """Runtime configuration for a :class:`~pravda.Pravda` instance."""
-
-    browser_ws_url: str
-    storage_base_path: str
-    timeouts: Timeouts = Timeouts()
-    liveness: Liveness = Liveness()

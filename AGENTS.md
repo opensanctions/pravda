@@ -6,14 +6,13 @@ Pravda is an async Python library for capturing durable web evidence with a remo
 
 - This is an early-stage project: do not preserve compatibility or add fallback behavior without a current need.
 - Prefer direct code over abstractions made for hypothetical reuse.
-- Pravda is a library, not a service. Do not add an HTTP API or application server.
 
 ## Architecture
 
 - Use async APIs only; do not add sync wrappers.
 - The Playwright package is a client. Pravda connects to an externally provisioned browser over WebSocket and never launches one; the endpoint owns its launch configuration.
 - Store artifacts through fsspec using content-addressed filenames.
-- Runtime configuration is explicit and instance-scoped (`PravdaConfig`); its construction is documented in the `pravda` package docstring.
+- Runtime configuration is explicit and instance-scoped: constructor parameters on `Pravda` and `Storage.from_url`, documented in the `pravda` package docstring. Storage is injected — the caller's handle is shared by capture and reads.
 - Pravda has no database: `capture()` returns `Snapshot` values with client-minted `id` and `captured_at`, and the application owns any schema for persisting them.
 - Add dependencies with `uv add`; do not edit `pyproject.toml` manually.
 
@@ -21,13 +20,13 @@ Pravda is an async Python library for capturing durable web evidence with a remo
 
 `Pravda` is a long-lived object that exposes an async `capture()` method.
 Standalone HTML — a self-contained page rendering — is derived from a
-snapshot's stored evidence by the exported async function
-`derive_standalone_html(snapshot, storage)`.
+snapshot's stored evidence by the async method
+`snapshot.derive_standalone_html(storage)`.
 
 - Without `drive`, `capture()` owns navigation and the complete capture pipeline.
 - The target-facing capture must remain bounded by one wall-clock timeout.
   Browser setup and context close carry liveness deadlines from
-  `PravdaConfig.liveness`; their expiry is infrastructure failure, not
+  `Liveness`; their expiry is infrastructure failure, not
   evidence about the target: it raises and captures nothing. Storage
   carries no budget: dead infrastructure fails on its own errors,
   and a wedged-but-alive backend hangs until the caller cancels.

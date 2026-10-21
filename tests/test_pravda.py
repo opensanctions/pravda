@@ -3,7 +3,7 @@
 import pytest
 from playwright.async_api import Error as PlaywrightError
 
-from pravda import Pravda, derive_standalone_html
+from pravda import Pravda
 from tests.helpers import (
     PNG_BYTES,
     fulfill_html,
@@ -51,7 +51,7 @@ async def test_capture_drive_navigates_and_captures(pravda: Pravda, storage):
 
 @pytest.mark.asyncio
 async def test_derive_standalone_html_inlines_and_sanitizes(pravda: Pravda, storage):
-    """derive_standalone_html() inlines and sanitizes the page's resources."""
+    """snapshot.derive_standalone_html() inlines and sanitizes the page's resources."""
 
     async def drive(page, url):
         await page.route(url, fulfill_standalone)
@@ -80,7 +80,7 @@ async def test_derive_standalone_html_inlines_and_sanitizes(pravda: Pravda, stor
 
     assert snapshot.http_status == 200
     assert snapshot.error is None
-    html = await derive_standalone_html(snapshot, storage)
+    html = await snapshot.derive_standalone_html(storage)
     assert "Standalone fixture" in html
     assert "background-color: teal" in html
     assert "data:image/png;base64," in html
@@ -91,12 +91,12 @@ async def test_derive_standalone_html_inlines_and_sanitizes(pravda: Pravda, stor
 async def test_derive_standalone_html_requires_capture_evidence(
     pravda: Pravda, storage
 ):
-    """derive_standalone_html() rejects snapshots without stored evidence."""
+    """snapshot.derive_standalone_html() rejects snapshots without stored evidence."""
 
     snapshot = await pravda.capture("https://localhost:39999/")
 
     with pytest.raises(ValueError, match="evidence to derive standalone HTML"):
-        await derive_standalone_html(snapshot, storage)
+        await snapshot.derive_standalone_html(storage)
 
 
 @pytest.mark.asyncio

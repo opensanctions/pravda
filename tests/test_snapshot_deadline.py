@@ -7,7 +7,7 @@ from dataclasses import replace
 import pytest
 from playwright.async_api import BrowserContext, BrowserType
 
-from pravda import InfrastructureError, Liveness, Pravda, PravdaConfig, Timeouts
+from pravda import InfrastructureError, Liveness, Pravda, Timeouts
 from tests.helpers import fulfill_html
 
 
@@ -16,20 +16,19 @@ async def _drive_example(page, url):
     await page.goto(url, wait_until="load")
 
 
-def _pravda(tmp_path, liveness=None, **budgets: float) -> Pravda:
+def _pravda(storage, liveness=None, **budgets: float) -> Pravda:
     """A client with the given budget fields shrunk from the defaults."""
-    config = PravdaConfig(
-        browser_ws_url=os.environ["PRAVDA_TEST_BROWSER_WS_URL"],
-        storage_base_path=str(tmp_path),
+    return Pravda(
+        os.environ["PRAVDA_TEST_BROWSER_WS_URL"],
+        storage,
         timeouts=replace(Timeouts(), dom_settle_quiet=0.05, **budgets),
         liveness=liveness or Liveness(),
     )
-    return Pravda(config)
 
 
 @pytest.mark.asyncio
-async def test_capture_drive_timeout_returns_failed_snapshot(tmp_path):
-    pravda = _pravda(tmp_path, drive=0.2)
+async def test_capture_drive_timeout_returns_failed_snapshot(storage):
+    pravda = _pravda(storage, drive=0.2)
 
     async def drive(page, url):
         await asyncio.sleep(5)
@@ -44,9 +43,9 @@ async def test_capture_drive_timeout_returns_failed_snapshot(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_capture_wall_clock_timeout_returns_failed_snapshot(tmp_path):
+async def test_capture_wall_clock_timeout_returns_failed_snapshot(storage):
     """The wall-clock breaker expires while no inner budget has."""
-    pravda = _pravda(tmp_path, snapshot=0.2)
+    pravda = _pravda(storage, snapshot=0.2)
 
     async def drive(page, url):
         await asyncio.sleep(5)
@@ -61,8 +60,8 @@ async def test_capture_wall_clock_timeout_returns_failed_snapshot(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_setup_timeout_propagates(tmp_path, monkeypatch):
-    pravda = _pravda(tmp_path, liveness=Liveness(setup=0.2))
+async def test_setup_timeout_propagates(storage, monkeypatch):
+    pravda = _pravda(storage, liveness=Liveness(setup=0.2))
 
     async def slow_connect(self, url, **kwargs):
         await asyncio.sleep(5)
@@ -74,8 +73,8 @@ async def test_setup_timeout_propagates(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_context_close_timeout_raises(tmp_path, monkeypatch):
-    pravda = _pravda(tmp_path, liveness=Liveness(close=0.2))
+async def test_context_close_timeout_raises(storage, monkeypatch):
+    pravda = _pravda(storage, liveness=Liveness(close=0.2))
 
     async def slow_close(self, **kwargs):
         await asyncio.sleep(5)

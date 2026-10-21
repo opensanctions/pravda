@@ -2,7 +2,6 @@
 
 import asyncio
 import logging
-import shutil
 import tempfile
 import uuid
 from dataclasses import dataclass
@@ -20,7 +19,7 @@ from pravda.capture import (
     capture_page,
     is_http_url,
 )
-from pravda.config import Liveness, PravdaConfig, Timeouts
+from pravda.config import Liveness, Timeouts
 from pravda.http_archive import capture_http_archive
 from pravda.snapshots import Snapshot
 from pravda.storage import Storage
@@ -111,8 +110,8 @@ async def _capture(
 ) -> Snapshot:
     logger.info("Capturing %s", url)
 
-    http_archive_dir = Path(tempfile.mkdtemp())
-    try:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        http_archive_path = Path(tmp) / "record.zip"
         async with async_playwright() as playwright:
             # No browser.close(): stopping the driver disconnects, and the
             # endpoint closes this connection's contexts and browsers on
@@ -120,7 +119,6 @@ async def _capture(
             try:
                 async with asyncio.timeout(liveness.setup):
                     browser = await playwright.chromium.connect(browser_ws_url)
-                    http_archive_path = http_archive_dir / "record.zip"
                     context = await browser.new_context(
                         record_har_path=str(http_archive_path),
                         record_har_content="attach",
@@ -153,8 +151,6 @@ async def _capture(
             else:
                 await _close_context(context, liveness)
                 artifacts = await _store_artifacts(result, http_archive_path, storage)
-    finally:
-        shutil.rmtree(http_archive_dir, ignore_errors=True)
 
     snapshot = Snapshot(
         id=uuid.uuid4(),
@@ -186,11 +182,18 @@ class Pravda:
     values; persisting them is the application's policy.
     """
 
-    def __init__(self, config: PravdaConfig) -> None:
-        self._timeouts = config.timeouts
-        self._storage = Storage.from_url(config.storage_base_path)
-        self._browser_ws_url = config.browser_ws_url
-        self._liveness = config.liveness
+    def __init__(
+        self,
+        browser_ws_url: str,
+        storage: Storage,
+        *,
+        timeouts: Timeouts = Timeouts(),
+        liveness: Liveness = Liveness(),
+    ) -> None:
+        self._timeouts = timeouts
+        self._storage = storage
+        self._browser_ws_url = browser_ws_url
+        self._liveness = liveness
 
     async def capture(
         self, url: str, *, drive: DriveCallback | None = None
@@ -207,8 +210,8 @@ class Pravda:
 
         Browser machinery failures — connecting, preparing, or closing the
         recording context — raise :class:`InfrastructureError` and capture
-        nothing; a wedged-but-alive endpoint fails at the liveness deadlines
-        on ``PravdaConfig.liveness`` (seconds, default 30 each). A
+        nothing; a wedged-but-alive endpoint fails at the constructor's
+        ``liveness`` deadlines (seconds, default 30 each). A
         wedged-but-alive storage backend hangs until the caller cancels,
         and cancellation captures nothing.
         """

@@ -6,7 +6,7 @@ from dataclasses import replace
 import pytest
 from playwright.async_api import async_playwright
 
-from pravda import Pravda, PravdaConfig, Timeouts
+from pravda import Pravda, Timeouts
 from pravda.storage import Storage
 
 
@@ -19,25 +19,19 @@ def timeouts() -> Timeouts:
 
 
 @pytest.fixture()
-def pravda_config(tmp_path, timeouts) -> PravdaConfig:
-    """Configuration for a client with an isolated artifact store."""
-    return PravdaConfig(
-        browser_ws_url=os.environ["PRAVDA_TEST_BROWSER_WS_URL"],
-        storage_base_path=str(tmp_path),
-        timeouts=timeouts,
-    )
-
-
-@pytest.fixture()
-def pravda(pravda_config: PravdaConfig):
-    """A configured client."""
-    return Pravda(pravda_config)
-
-
-@pytest.fixture()
 def storage(tmp_path):
     """An isolated content-addressed store pointing at a temporary directory."""
     return Storage.from_url(str(tmp_path))
+
+
+@pytest.fixture()
+def pravda(storage, timeouts):
+    """A configured client sharing the test's artifact store."""
+    return Pravda(
+        os.environ["PRAVDA_TEST_BROWSER_WS_URL"],
+        storage,
+        timeouts=timeouts,
+    )
 
 
 @pytest.fixture(scope="session")

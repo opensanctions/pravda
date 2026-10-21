@@ -25,21 +25,19 @@ pip install opensanctions-pravda
 
 ## Quick start
 
-Construct a [`PravdaConfig`](#configuration) and build a long-lived
-`Pravda`. Reuse a single instance across captures — each capture opens its
-own browser connection.
+Build the content-addressed [`Storage`](#storage) once, then a long-lived
+`Pravda` over it. Reuse a single instance across captures — each capture
+opens its own browser connection, and the same storage handle reads
+artifacts back later.
 
 ```python
-from pravda import Pravda, PravdaConfig
+from pravda import Pravda, Storage
 
-config = PravdaConfig(
-    browser_ws_url="ws://localhost:3000",
-    storage_base_path="./data",
-)
+storage = Storage.from_url("./data")
+pravda = Pravda("ws://localhost:3000", storage)
 
 
 async def capture_example():
-    pravda = Pravda(config)
     snapshot = await pravda.capture("https://example.com")
     print(snapshot.id, snapshot.http_status, snapshot.rendered_html)
 ```
@@ -50,9 +48,12 @@ in your own transaction — is up to the application.
 
 ## Configuration
 
+`Pravda(browser_ws_url, storage, *, timeouts, liveness)` takes:
+
 - `browser_ws_url` — remote Playwright WebSocket URL.
-- `storage_base_path` — fsspec storage URL, such as `./data`, `s3://bucket`,
-  or `gs://bucket`.
+- `storage` — a `Storage` built with `Storage.from_url(...)`: any fsspec
+  URL, such as `./data`, `s3://bucket`, or `gs://bucket`. The handle is
+  the application's, shared by capture and later artifact reads.
 - `timeouts` — a frozen `Timeouts` of wall-clock budgets for the captured
   website, defaulting to sensible values; see its docstring for what each
   budget does on expiry. Override individual fields with
@@ -105,11 +106,12 @@ inlined, images embedded as data URIs, active content sanitized — from a
 snapshot's stored evidence:
 
 ```python
-from pravda import Storage, derive_standalone_html
-
-storage = Storage.from_url(config.storage_base_path)
-html = await derive_standalone_html(snapshot, storage)
+html = await snapshot.derive_standalone_html(storage)
 ```
+
+Deriving needs only the snapshot and a storage handle — no browser — so
+it works in any process, including ones rehydrating snapshots from a
+database.
 
 ## Storage
 
