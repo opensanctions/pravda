@@ -7,7 +7,7 @@ from dataclasses import dataclass
 class Timeouts:
     """Wall-clock budgets for the captured website, in seconds.
 
-    Expiry is recorded evidence — a persisted failed attempt, or a dropped
+    Expiry is recorded evidence — a returned failed snapshot, or a dropped
     artifact — because "the page never loaded" is a finding about the target.
 
         snapshot: One wall-clock bound over the whole target-facing capture;
@@ -39,7 +39,7 @@ class Liveness:
 
     Unlike :class:`Timeouts`, expiry says nothing about the target: a
     wedged-but-alive endpoint, not a slow website. Both deadlines raise
-    :class:`~pravda.InfrastructureError` and persist nothing.
+    :class:`~pravda.InfrastructureError` and capture nothing.
 
         setup: Connecting to the endpoint and preparing the recording
             context.

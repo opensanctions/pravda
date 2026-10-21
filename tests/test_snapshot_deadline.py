@@ -1,4 +1,4 @@
-"""Liveness and wall-clock bounds for ``Pravda.snapshot``."""
+"""Liveness and wall-clock bounds for ``Pravda.capture``."""
 
 import asyncio
 import os
@@ -6,10 +6,9 @@ from dataclasses import replace
 
 import pytest
 from playwright.async_api import BrowserContext, BrowserType
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from pravda import InfrastructureError, Liveness, Pravda, PravdaConfig, Timeouts
-from tests.helpers import fulfill_html, snapshot_ids
+from tests.helpers import fulfill_html
 
 
 async def _drive_example(page, url):
@@ -17,7 +16,7 @@ async def _drive_example(page, url):
     await page.goto(url, wait_until="load")
 
 
-def _pravda(sessionmaker, tmp_path, liveness=None, **budgets: float) -> Pravda:
+def _pravda(tmp_path, liveness=None, **budgets: float) -> Pravda:
     """A client with the given budget fields shrunk from the defaults."""
     config = PravdaConfig(
         browser_ws_url=os.environ["PRAVDA_TEST_BROWSER_WS_URL"],
@@ -25,17 +24,17 @@ def _pravda(sessionmaker, tmp_path, liveness=None, **budgets: float) -> Pravda:
         timeouts=replace(Timeouts(), dom_settle_quiet=0.05, **budgets),
         liveness=liveness or Liveness(),
     )
-    return Pravda(config, sessionmaker)
+    return Pravda(config)
 
 
 @pytest.mark.asyncio
-async def test_snapshot_drive_timeout_persists_failed_attempt(sessionmaker, tmp_path):
-    pravda = _pravda(sessionmaker, tmp_path, drive=0.2)
+async def test_capture_drive_timeout_returns_failed_snapshot(tmp_path):
+    pravda = _pravda(tmp_path, drive=0.2)
 
     async def drive(page, url):
         await asyncio.sleep(5)
 
-    snapshot = await pravda.snapshot("https://example.com", drive=drive)
+    snapshot = await pravda.capture("https://example.com", drive=drive)
 
     assert "drive" in snapshot.error.lower()
     assert snapshot.http_status is None
@@ -45,16 +44,14 @@ async def test_snapshot_drive_timeout_persists_failed_attempt(sessionmaker, tmp_
 
 
 @pytest.mark.asyncio
-async def test_snapshot_wall_clock_timeout_persists_failed_attempt(
-    sessionmaker, tmp_path
-):
+async def test_capture_wall_clock_timeout_returns_failed_snapshot(tmp_path):
     """The wall-clock breaker expires while no inner budget has."""
-    pravda = _pravda(sessionmaker, tmp_path, snapshot=0.2)
+    pravda = _pravda(tmp_path, snapshot=0.2)
 
     async def drive(page, url):
         await asyncio.sleep(5)
 
-    snapshot = await pravda.snapshot("https://example.com", drive=drive)
+    snapshot = await pravda.capture("https://example.com", drive=drive)
 
     assert "wall-clock" in snapshot.error
     assert snapshot.http_status is None
@@ -64,10 +61,8 @@ async def test_snapshot_wall_clock_timeout_persists_failed_attempt(
 
 
 @pytest.mark.asyncio
-async def test_setup_timeout_propagates_without_persisting(
-    sessionmaker, tmp_path, monkeypatch
-):
-    pravda = _pravda(sessionmaker, tmp_path, liveness=Liveness(setup=0.2))
+async def test_setup_timeout_propagates(tmp_path, monkeypatch):
+    pravda = _pravda(tmp_path, liveness=Liveness(setup=0.2))
 
     async def slow_connect(self, url, **kwargs):
         await asyncio.sleep(5)
@@ -75,25 +70,19 @@ async def test_setup_timeout_propagates_without_persisting(
     monkeypatch.setattr(BrowserType, "connect", slow_connect)
 
     with pytest.raises(InfrastructureError, match="setup"):
-        await pravda.snapshot("https://example.com", drive=_drive_example)
-
-    assert await snapshot_ids(sessionmaker, "https://example.com") == set()
+        await pravda.capture("https://example.com", drive=_drive_example)
 
 
 @pytest.mark.asyncio
-async def test_context_close_timeout_raises_without_persisting(
-    sessionmaker, tmp_path, monkeypatch
-):
-    pravda = _pravda(sessionmaker, tmp_path, liveness=Liveness(close=0.2))
+async def test_context_close_timeout_raises(tmp_path, monkeypatch):
+    pravda = _pravda(tmp_path, liveness=Liveness(close=0.2))
 
     async def slow_close(self, **kwargs):
         await asyncio.sleep(5)
 
     monkeypatch.setattr(BrowserContext, "close", slow_close)
     with pytest.raises(InfrastructureError, match="context close"):
-        await pravda.snapshot("https://example.com", drive=_drive_example)
-
-    assert await snapshot_ids(sessionmaker, "https://example.com") == set()
+        await pravda.capture("https://example.com", drive=_drive_example)
 
 
 def test_liveness_deadlines_must_be_positive():
@@ -102,35 +91,7 @@ def test_liveness_deadlines_must_be_positive():
 
 
 @pytest.mark.asyncio
-async def test_snapshot_wedged_persistence_bounded_by_caller(
-    sessionmaker, tmp_path, monkeypatch
-):
-    """A wedged database hangs until the caller cancels, persisting nothing."""
-    pravda = _pravda(sessionmaker, tmp_path)
-
-    commit_started = asyncio.Event()
-
-    async def hanging_commit(self):
-        commit_started.set()
-        await asyncio.sleep(5)
-
-    monkeypatch.setattr(AsyncSession, "commit", hanging_commit)
-
-    capture = asyncio.create_task(
-        pravda.snapshot("https://example.com", drive=_drive_example)
-    )
-    # Reach the wedge first, so the bound below cancels the commit —
-    # not a capture that simply was not done yet.
-    await asyncio.wait_for(commit_started.wait(), timeout=10)
-
-    with pytest.raises(asyncio.TimeoutError):
-        await asyncio.wait_for(capture, timeout=0.2)
-
-    assert await snapshot_ids(sessionmaker, "https://example.com") == set()
-
-
-@pytest.mark.asyncio
-async def test_snapshot_cancellation_propagates(pravda: Pravda, sessionmaker):
+async def test_capture_cancellation_propagates(pravda: Pravda):
     started = asyncio.Event()
     block = asyncio.Event()
 
@@ -138,11 +99,9 @@ async def test_snapshot_cancellation_propagates(pravda: Pravda, sessionmaker):
         started.set()
         await block.wait()
 
-    task = asyncio.create_task(pravda.snapshot("https://example.com", drive=drive))
+    task = asyncio.create_task(pravda.capture("https://example.com", drive=drive))
     await started.wait()
     task.cancel()
 
     with pytest.raises(asyncio.CancelledError):
         await task
-
-    assert await snapshot_ids(sessionmaker, "https://example.com") == set()

@@ -1,4 +1,4 @@
-"""Finalization failures raise and persist nothing."""
+"""Finalization failures raise and capture nothing."""
 
 import pytest
 from playwright.async_api import Error as PlaywrightError
@@ -6,7 +6,7 @@ from playwright.async_api import Error as PlaywrightError
 import pravda.pravda as pravda_module
 from pravda import InfrastructureError, Liveness, Pravda, Timeouts
 from pravda.capture import capture_page
-from tests.helpers import fulfill_html, snapshot_ids
+from tests.helpers import fulfill_html
 
 
 async def _record_example(browser, tmp_path, timeouts: Timeouts):
@@ -23,7 +23,7 @@ async def _record_example(browser, tmp_path, timeouts: Timeouts):
 
 @pytest.mark.asyncio
 async def test_context_close_failure_raises(browser, storage, tmp_path, timeouts):
-    """A context.close failure is infrastructure: it raises, persisting nothing."""
+    """A context.close failure is infrastructure: it raises, capturing nothing."""
     context, captured, path = await _record_example(browser, tmp_path, timeouts)
 
     async def failing_close():
@@ -39,7 +39,7 @@ async def test_context_close_failure_raises(browser, storage, tmp_path, timeouts
 
 @pytest.mark.asyncio
 async def test_missing_http_archive_raises(browser, storage, tmp_path, timeouts):
-    """A close that leaves no HAR is infrastructure: it raises, persisting nothing."""
+    """A close that leaves no HAR is infrastructure: it raises, capturing nothing."""
     context, captured, path = await _record_example(browser, tmp_path, timeouts)
     await context.close()
     path.unlink()
@@ -51,10 +51,8 @@ async def test_missing_http_archive_raises(browser, storage, tmp_path, timeouts)
 
 
 @pytest.mark.asyncio
-async def test_snapshot_har_storage_failure_propagates_without_persisting(
-    pravda: Pravda, sessionmaker, monkeypatch
-):
-    """A storage failure during HAR processing propagates and persists nothing."""
+async def test_capture_har_storage_failure_propagates(pravda: Pravda, monkeypatch):
+    """A storage failure during HAR processing propagates."""
 
     async def drive(page, url):
         await page.route(url, fulfill_html)
@@ -78,6 +76,4 @@ async def test_snapshot_har_storage_failure_propagates_without_persisting(
     monkeypatch.setattr(pravda._storage.fs, "_pipe_file", fail_har_pipe_file)
 
     with pytest.raises(OSError, match="storage backend down"):
-        await pravda.snapshot("https://example.com", drive=drive)
-
-    assert await snapshot_ids(sessionmaker, "https://example.com") == set()
+        await pravda.capture("https://example.com", drive=drive)

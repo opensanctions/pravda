@@ -1,16 +1,12 @@
-"""Shared pytest fixtures for the test browser and database."""
+"""Shared pytest fixtures for the test browser and storage."""
 
 import os
-import uuid
 from dataclasses import replace
 
 import pytest
 from playwright.async_api import async_playwright
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-from sqlalchemy.pool import AsyncAdaptedQueuePool
 
 from pravda import Pravda, PravdaConfig, Timeouts
-from pravda.db import Base
 from pravda.storage import Storage
 
 
@@ -33,26 +29,9 @@ def pravda_config(tmp_path, timeouts) -> PravdaConfig:
 
 
 @pytest.fixture()
-async def sessionmaker():
-    """A fresh in-memory SQLite database shared by one test's connections.
-
-    A named shared-cache database gives each session its own connection and
-    transaction state, and is discarded when the test's engine is disposed.
-    """
-    url = (
-        f"sqlite+aiosqlite:///file:{uuid.uuid4().hex}?mode=memory&cache=shared&uri=true"
-    )
-    engine = create_async_engine(url, poolclass=AsyncAdaptedQueuePool)
-    async with engine.begin() as connection:
-        await connection.run_sync(Base.metadata.create_all)
-    yield async_sessionmaker(engine)
-    await engine.dispose()
-
-
-@pytest.fixture()
-async def pravda(sessionmaker, pravda_config: PravdaConfig):
-    """A configured client sharing the test's in-memory database."""
-    return Pravda(pravda_config, sessionmaker)
+def pravda(pravda_config: PravdaConfig):
+    """A configured client."""
+    return Pravda(pravda_config)
 
 
 @pytest.fixture()

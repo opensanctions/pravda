@@ -1,4 +1,4 @@
-"""Content-addressed blob storage over fsspec."""
+"""Content-addressed artifact storage over fsspec."""
 
 import hashlib
 import ipaddress
@@ -43,7 +43,7 @@ def cas_name(data: bytes, ext: str = "") -> str:
 
 @dataclass(frozen=True)
 class Storage:
-    """An async content-addressed blob store."""
+    """An async content-addressed artifact store."""
 
     fs: AsyncFileSystem
     base_path: str
@@ -56,27 +56,22 @@ class Storage:
             fs = AsyncFileSystemWrapper(fs)
         return cls(fs=fs, base_path=base_path)
 
-    def content_prefix(self, url: str) -> str:
+    def _content_prefix(self, url: str) -> str:
         """Return the storage prefix for *url*."""
         return os.path.join(self.base_path, normalize_hostname(url))
 
-    async def put_blob(self, name: str, data: bytes, url: str) -> str:
-        """Store *data* under *url*'s hostname prefix and return *name*."""
-        host_dir = self.content_prefix(url)
+    async def put_artifact(self, data: bytes, ext: str, url: str) -> str:
+        """Store *data* content-addressed under *url*'s prefix; return its name."""
+        host_dir = self._content_prefix(url)
+        name = cas_name(data, ext)
         path = os.path.join(host_dir, name)
 
         await self.fs._makedirs(host_dir, exist_ok=True)
         await self.fs._pipe_file(path, data)
 
-        logger.debug("Stored blob: %s (%d bytes)", name, len(data))
+        logger.debug("Stored artifact %s (%d bytes)", name, len(data))
         return name
 
-    async def put_artifact(self, data: bytes, ext: str, url: str) -> str:
-        """Store *data* content-addressed and return its name."""
-        name = cas_name(data, ext)
-        await self.put_blob(name, data, url)
-        return name
-
-    async def read_blob(self, path: str) -> bytes:
-        """Return the bytes stored at *path*, a resolved artifact path."""
-        return await self.fs._cat_file(path)
+    async def read_artifact(self, name: str, url: str) -> bytes:
+        """Return the bytes of artifact *name* under *url*'s prefix."""
+        return await self.fs._cat_file(os.path.join(self._content_prefix(url), name))

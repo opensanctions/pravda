@@ -2,67 +2,44 @@ from pathlib import Path
 
 import pytest
 
-from pravda.storage import Storage, cas_name, content_hash, normalize_hostname
+from pravda.storage import Storage, cas_name, normalize_hostname
 
 
 @pytest.mark.asyncio
-async def test_put_blob_stores_at_content_address(storage: Storage):
-    data = b"hello pravda"
-    name = f"{content_hash(data)}.txt"
-    url = "https://www.example.com/path"
-
-    stored = await storage.put_blob(name, data, url)
-    assert stored == name
-
-    # Written under the normalized hostname prefix.
-    path = Path(storage.content_prefix(url)) / name
-    assert path.read_bytes() == data
-
-
-@pytest.mark.asyncio
-async def test_put_blob_deduplicates(storage: Storage):
-    data = b"same content twice"
-    name = cas_name(data, "mhtml")
-
-    name1 = await storage.put_blob(name, data, "https://example.com")
-    name2 = await storage.put_blob(name, data, "https://example.com")
-    assert name1 == name2
-
-
-@pytest.mark.asyncio
-async def test_put_artifact_names_and_stores_content_addressed(storage: Storage):
+async def test_put_artifact_stores_at_content_address(storage: Storage):
     data = b"<html>hello</html>"
-    url = "https://example.com/page"
+    url = "https://www.example.com/page"
 
     name = await storage.put_artifact(data, "html", url)
 
     assert name == cas_name(data, "html")
-    path = Path(storage.content_prefix(url)) / name
+    # Under the URL's normalized hostname (www stripped).
+    path = Path(storage.base_path) / "example.com" / name
     assert path.read_bytes() == data
 
 
 @pytest.mark.asyncio
-async def test_read_blob_returns_stored_bytes(storage: Storage):
-    data = b"hello pravda"
-    url = "https://example.com/path"
-    name = await storage.put_blob(cas_name(data, "txt"), data, url)
+async def test_put_artifact_deduplicates(storage: Storage):
+    data = b"same content twice"
 
-    # Reads the resolved path a Snapshot exposes.
-    path = Path(storage.content_prefix(url)) / name
-    assert await storage.read_blob(str(path)) == data
+    name1 = await storage.put_artifact(data, "mhtml", "https://example.com")
+    name2 = await storage.put_artifact(data, "mhtml", "https://example.com")
+    assert name1 == name2
 
 
 @pytest.mark.asyncio
-async def test_read_blob_missing_path_raises(storage: Storage):
-    path = Path(storage.base_path) / "example.com" / "missing.txt"
+async def test_read_artifact_returns_stored_bytes(storage: Storage):
+    data = b"hello pravda"
+    url = "https://example.com/path"
+    name = await storage.put_artifact(data, "txt", url)
+
+    assert await storage.read_artifact(name, url) == data
+
+
+@pytest.mark.asyncio
+async def test_read_artifact_missing_artifact_raises(storage: Storage):
     with pytest.raises(FileNotFoundError):
-        await storage.read_blob(str(path))
-
-
-def test_content_prefix_joins_base_and_hostname(storage: Storage):
-    assert storage.content_prefix("https://www.example.com:443/p") == (
-        f"{storage.base_path}/example.com"
-    )
+        await storage.read_artifact("missing.txt", "https://example.com/path")
 
 
 def test_normalize_hostname_lowercases_strips_www():

@@ -1,6 +1,6 @@
 # Pravda
 
-Pravda is an async Python library for capturing durable web evidence with a remote browser, a SQL database, and content-addressed blob storage.
+Pravda is an async Python library for capturing durable web evidence with a remote browser and content-addressed blob storage.
 
 ## Principles
 
@@ -14,23 +14,23 @@ Pravda is an async Python library for capturing durable web evidence with a remo
 - The Playwright package is a client. Pravda connects to an externally provisioned browser over WebSocket and never launches one; the endpoint owns its launch configuration.
 - Store artifacts through fsspec using content-addressed filenames.
 - Runtime configuration is explicit and instance-scoped (`PravdaConfig`); its construction is documented in the `pravda` package docstring.
-- The schema in `src/pravda/db.py` is `pravda.db.Base` metadata. Consumers own the database and its migration ledger, generating their own migrations; library code must not create the schema. Schema changes are breaking for consumers.
+- Pravda has no database: `capture()` returns `Snapshot` values with client-minted `id` and `captured_at`, and the application owns any schema for persisting them.
 - Add dependencies with `uv add`; do not edit `pyproject.toml` manually.
 
 ## Public behavior
 
-`Pravda` is a long-lived object that exposes an async `snapshot()` method.
+`Pravda` is a long-lived object that exposes an async `capture()` method.
 
-- Without `drive`, `snapshot()` owns navigation and the complete capture pipeline.
+- Without `drive`, `capture()` owns navigation and the complete capture pipeline.
 - The target-facing capture must remain bounded by one wall-clock timeout.
   Browser setup and context close carry liveness deadlines from
   `PravdaConfig.liveness`; their expiry is infrastructure failure, not
-  evidence about the target: it raises and persists nothing. Storage and
-  database carry no budgets: dead infrastructure fails on its own errors,
-  and a wedged-but-alive dependency hangs until the caller cancels.
-- With `drive(page, url)`, the callback owns initial navigation and interaction; Pravda still owns capture, persistence, and cleanup.
-- Navigation, capture, and Playwright callback failures are persisted as failed snapshots; `Pravda` commits each capture attempt through the application-owned session factory. Browser connection setup and context close are Pravda's own infrastructure: their failures raise `InfrastructureError` and persist nothing, like storage and database failures. Non-Playwright callback exceptions propagate and persist nothing.
-- Concurrent `snapshot()` calls are safe: each opens its own browser connection, recording context, temporary directory, and database session.
+  evidence about the target: it raises and captures nothing. Storage
+  carries no budget: dead infrastructure fails on its own errors,
+  and a wedged-but-alive backend hangs until the caller cancels.
+- With `drive(page, url)`, the callback owns initial navigation and interaction; Pravda still owns capture and cleanup.
+- Navigation, capture, and Playwright callback failures are returned as failed snapshots (`error` set); persisting them is the caller's policy. Browser connection setup and context close are Pravda's own infrastructure: their failures raise `InfrastructureError` and capture nothing, like storage failures. Non-Playwright callback exceptions propagate and capture nothing.
+- Concurrent `capture()` calls are safe: each opens its own browser connection, recording context, and temporary directory.
 
 ## Downloads
 
@@ -40,7 +40,7 @@ When the browser endpoint sends viewer-handled responses such as PDFs as downloa
 
 - Run against the configured browser endpoint; do not use the public internet.
 - Use Playwright `page.route()` and files in `tests/fixtures/` for web content.
-- Use the in-memory SQLite database (schema created via `Base.metadata.create_all` in `tests/conftest.py`) and the configured client fixtures.
+- Use the configured client fixtures; assert returned values and stored artifacts.
 - Use mocks to inject failure or delay in a dependency, never to fake working behavior.
 - Test public behavior rather than implementation details.
 - Keep the test suite small and meaningful.

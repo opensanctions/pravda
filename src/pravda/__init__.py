@@ -1,27 +1,27 @@
-"""Durable evidence capture for web pages.
+"""Durable web evidence capture for web pages.
 
-Construct a :class:`Pravda` with explicit :class:`PravdaConfig` settings and
-an application-owned async session factory::
-
-    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+Construct a :class:`Pravda` with explicit :class:`PravdaConfig` settings::
 
     from pravda import Pravda, PravdaConfig
 
-    engine = create_async_engine(database_url)
-    sessionmaker = async_sessionmaker(engine)
     config = PravdaConfig(
         browser_ws_url=...,
         storage_base_path=...,
     )
+    pravda = Pravda(config)
+    snapshot = await pravda.capture(url)
 
-    pravda = Pravda(config, sessionmaker)
-    snapshot = await pravda.snapshot(url)
+Capture returns a :class:`Snapshot` value with client-minted ``id`` and
+``captured_at``; artifact fields are storage-relative names, read back
+with ``storage.read_artifact(name, snapshot.final_url)``. Persisting
+snapshots — including failed captures, returned with ``error`` set — is
+the application's policy: Pravda owns the browser and content-addressed
+artifact storage.
 
-Applications own the database engine and dispose it on shutdown.
-
-Capture budgets bound the target website only and default to ``Timeouts()``;
-browser machinery liveness deadlines default to ``Liveness()``. Browser
-machinery failures raise :class:`InfrastructureError` and persist nothing.
+Capture budgets bound the target website only and default to
+``Timeouts()``; browser machinery liveness deadlines default to
+``Liveness()``. Browser machinery failures raise
+:class:`InfrastructureError` and capture nothing.
 """
 
 from pravda.config import Liveness, PravdaConfig, Timeouts

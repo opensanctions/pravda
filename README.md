@@ -3,15 +3,15 @@
 Pravda is a Python library for durable web evidence capture. It drives a
 remote Playwright browser to preserve rendered HTML, full-page
 screenshots, standalone HTML, metadata, and HAR recordings with response
-bodies. Snapshots are
-recorded in a SQL database (PostgreSQL or SQLite) and on any fsspec-compatible
-backend for later inspection or comparison.
+bodies. Captures are returned as immutable `Snapshot` values, and
+artifacts are written to any fsspec-compatible backend for later
+inspection or comparison. Persisting snapshots to a database is the
+application's policy.
 
-Applications own the browser, database, and storage backend.
+Applications own the browser and storage backend.
 
 - **Browser**: a remote Playwright Chromium WebSocket endpoint (e.g. headed
   Chrome under xvfb).
-- **Database**: PostgreSQL or SQLite.
 - **Storage**: any fsspec URL (local path, `s3://`, `gs://`, …) for
   content-addressed artifacts.
 
@@ -25,20 +25,13 @@ pip install opensanctions-pravda
 
 ## Quick start
 
-The application owns the SQLAlchemy engine and an `async_sessionmaker`;
-construct a
-[`PravdaConfig`](#configuration) for the remaining settings and build a
-long-lived `Pravda`. Reuse a single instance across captures — each capture
-opens its own browser connection and database session — and dispose the engine
-on shutdown.
+Construct a [`PravdaConfig`](#configuration) and build a long-lived
+`Pravda`. Reuse a single instance across captures — each capture opens its
+own browser connection.
 
 ```python
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-
 from pravda import Pravda, PravdaConfig
 
-engine = create_async_engine("postgresql+psycopg://pravda:pravda@localhost:5432/pravda")
-sessionmaker = async_sessionmaker(engine)
 config = PravdaConfig(
     browser_ws_url="ws://localhost:3000",
     storage_base_path="./data",
@@ -46,10 +39,14 @@ config = PravdaConfig(
 
 
 async def capture_example():
-    pravda = Pravda(config, sessionmaker)
-    snapshot = await pravda.snapshot("https://example.com")
+    pravda = Pravda(config)
+    snapshot = await pravda.capture("https://example.com")
     print(snapshot.id, snapshot.http_status, snapshot.rendered_html)
 ```
+
+`Pravda.capture` returns a `Snapshot` value with a client-minted `id` and
+`captured_at`. Persisting it — with your own session, in your own schema,
+in your own transaction — is up to the application.
 
 ## Configuration
 
@@ -69,18 +66,18 @@ async def capture_example():
 
 ### Capture a page
 
-By default, Pravda navigates to the URL, waits for the normal `load` state,
-captures the evidence, and persists the result. The target-facing capture is
-bounded by one wall-clock budget; a wedged-but-alive storage backend or
-database hangs until the caller cancels. Browser machinery — connecting,
+By default, Pravda navigates to the URL, waits for the normal `load`
+state, captures the evidence, and returns the snapshot. The target-facing
+capture is bounded by one wall-clock budget; a wedged-but-alive storage
+backend hangs until the caller cancels. Browser machinery — connecting,
 preparing, or closing the recording context — is Pravda's infrastructure,
-not the target: its failures raise `InfrastructureError` and persist
+not the target: its failures raise `InfrastructureError` and capture
 nothing, with a wedged-but-alive endpoint failing at the `liveness`
 deadlines.
 
 For custom navigation or interaction, pass an async `drive(page, url)`
-callback. The callback owns the initial navigation; Pravda owns capture,
-persistence, and cleanup, and records the state it leaves behind.
+callback. The callback owns the initial navigation; Pravda owns capture
+and cleanup, and records the state it leaves behind.
 
 ```python
 async def drive(page, url):
@@ -89,13 +86,13 @@ async def drive(page, url):
 
 
 async def capture_results():
-    pravda = Pravda(config, sessionmaker)
-    snapshot = await pravda.snapshot("https://example.com", drive=drive)
+    pravda = Pravda(config)
+    snapshot = await pravda.capture("https://example.com", drive=drive)
 ```
 
 `page` is a real `playwright.async_api.Page`. Playwright errors and timeouts
-from `drive` are persisted as failed snapshots. Other callback exceptions
-propagate and persist nothing.
+from `drive` are returned as failed snapshots with `error` set. Other
+callback exceptions propagate and capture nothing.
 
 When the browser endpoint sends PDFs as downloads, `page.goto()` in custom
 callbacks may raise `Download is starting`; catch that Playwright error if
@@ -104,21 +101,20 @@ the download is expected. Pravda recovers the downloaded body into the HAR.
 ## Storage
 
 Artifacts are content-addressed files organized under the captured page's
-hostname. The public `Snapshot` resolves its artifact fields to full storage
-paths: `rendered_html`, `screenshot`, and `standalone_html` point at stored
-files, and each HAR `response.content._file` resolves to its stored response
-body. `standalone_html` is a self-contained rendering of the page —
+hostname. The `Snapshot` keeps storage-relative artifact names. Read
+artifacts back by name with the page's final URL:
+`storage.read_artifact(name, snapshot.final_url)` works for `rendered_html`, `screenshot`, `standalone_html`, and each HAR
+`response.content._file` entry.
+`standalone_html` is a self-contained rendering of the page —
 stylesheets inlined, images embedded as data URIs, active content sanitized —
 derived from the rendered DOM and the recorded HAR bodies for direct
-inspection; derivation failures drop only that artifact.
-Persisted database fields and HAR values keep their relative, content-addressed
-names. Other storage failures propagate, and no snapshot record is persisted.
+inspection; derivation failures drop only that artifact. Other storage
+failures propagate, and capture returns nothing.
 
 ## Development
 
 Requires [uv](https://docs.astral.sh/uv/) and a remote Playwright browser
-endpoint. Tests run against an in-memory SQLite database, so no database
-service is needed. Environment variables live in `.env`; `uv` does not read
+endpoint. Environment variables live in `.env`; `uv` does not read
 it automatically:
 
 ```bash

@@ -4,12 +4,13 @@ import asyncio
 import logging
 import shutil
 import tempfile
+import uuid
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 from playwright.async_api import BrowserContext, async_playwright
 from playwright.async_api import Error as PlaywrightError
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from pravda.capture import (
     CaptureResult,
@@ -20,25 +21,24 @@ from pravda.capture import (
     is_http_url,
 )
 from pravda.config import Liveness, PravdaConfig, Timeouts
-from pravda.db import SnapshotRecord
 from pravda.http_archive import capture_http_archive
-from pravda.snapshots import Snapshot, from_record
+from pravda.snapshots import Snapshot
 from pravda.standalone import capture_standalone_html
 from pravda.storage import Storage
 
 logger = logging.getLogger(__name__)
 
-# The persist/raise boundary is the capture zone, not the failure's
-# nature: navigation, capture, and Playwright callback failures persist
-# as failed snapshots — snapshot.error may carry browser noise like
-# "Target crashed", since Playwright has one Error type. Browser setup
-# and context close are machinery: they raise InfrastructureError and
-# persist nothing. Evidence finalizes atomically, except standalone-HTML
-# derivation failures, which drop only that artifact.
+# The return/raise boundary is the capture zone, not the failure's
+# nature: navigation, capture, and Playwright callback failures are
+# returned as failed snapshots — snapshot.error may carry browser noise
+# like "Target crashed", since Playwright has one Error type. Browser
+# setup and context close are machinery: they raise InfrastructureError
+# and capture nothing. Evidence finalizes atomically, except
+# standalone-HTML derivation failures, which drop only that artifact.
 
 
 class InfrastructureError(Exception):
-    """Pravda's browser machinery failed; nothing was persisted."""
+    """Pravda's browser machinery failed; nothing was captured."""
 
 
 class _CaptureFailure(Exception):
@@ -120,46 +120,11 @@ async def _store_artifacts(
     )
 
 
-async def _persist_snapshot(
-    url: str,
-    result: CaptureResult,
-    artifacts: StoredArtifacts,
-    sessionmaker: async_sessionmaker,
-    storage: Storage,
-) -> Snapshot:
-    record = SnapshotRecord(
-        url=url,
-        final_url=result.final_url,
-        http_status=result.http_status,
-        error=result.error,
-        rendered_html=artifacts.rendered_html,
-        screenshot=artifacts.screenshot,
-        standalone_html=artifacts.standalone_html,
-        http_archive=artifacts.http_archive,
-    )
-    async with sessionmaker() as session:
-        session.add(record)
-        # Commit may expire the record; build the snapshot first.
-        await session.flush()
-        snapshot = from_record(record, storage)
-        await session.commit()
-    logger.info(
-        "Captured %s id=%s: status=%s http_archive=%s error=%s",
-        snapshot.url,
-        snapshot.id,
-        snapshot.http_status,
-        snapshot.http_archive is not None,
-        snapshot.error,
-    )
-    return snapshot
-
-
 async def _capture(
     url: str,
     *,
     drive: DriveCallback | None,
     browser_ws_url: str,
-    sessionmaker: async_sessionmaker,
     storage: Storage,
     timeouts: Timeouts,
     liveness: Liveness,
@@ -169,10 +134,9 @@ async def _capture(
     http_archive_dir = Path(tempfile.mkdtemp())
     try:
         async with async_playwright() as playwright:
-            # Connection setup is Pravda's machinery, not the target: its
-            # failures raise and persist nothing. No browser.close() either —
-            # stopping the driver disconnects, and the endpoint closes this
-            # connection's contexts and browsers on disconnect.
+            # No browser.close(): stopping the driver disconnects, and the
+            # endpoint closes this connection's contexts and browsers on
+            # disconnect.
             try:
                 async with asyncio.timeout(liveness.setup):
                     browser = await playwright.chromium.connect(browser_ws_url)
@@ -212,52 +176,69 @@ async def _capture(
     finally:
         shutil.rmtree(http_archive_dir, ignore_errors=True)
 
-    return await _persist_snapshot(url, result, artifacts, sessionmaker, storage)
+    snapshot = Snapshot(
+        id=uuid.uuid4(),
+        url=url,
+        final_url=result.final_url,
+        captured_at=datetime.now(timezone.utc),
+        http_status=result.http_status,
+        error=result.error,
+        rendered_html=artifacts.rendered_html,
+        screenshot=artifacts.screenshot,
+        standalone_html=artifacts.standalone_html,
+        http_archive=artifacts.http_archive,
+    )
+    logger.info(
+        "Captured %s id=%s: status=%s http_archive=%s error=%s",
+        snapshot.url,
+        snapshot.id,
+        snapshot.http_status,
+        snapshot.http_archive is not None,
+        snapshot.error,
+    )
+    return snapshot
 
 
 class Pravda:
     """Configured async entry point for evidence capture.
 
-    The application owns the database engine and its ``async_sessionmaker``.
-    Each concurrent capture owns its browser connection, recording context,
-    temporary directory, and database session.
+    Each concurrent capture owns its browser connection, recording
+    context, and temporary directory. Captures return :class:`Snapshot`
+    values; persisting them is the application's policy.
     """
 
-    def __init__(
-        self,
-        config: PravdaConfig,
-        sessionmaker: async_sessionmaker[AsyncSession],
-    ) -> None:
-        self._sessionmaker = sessionmaker
+    def __init__(self, config: PravdaConfig) -> None:
         self._timeouts = config.timeouts
         self._storage = Storage.from_url(config.storage_base_path)
         self._browser_ws_url = config.browser_ws_url
         self._liveness = config.liveness
 
-    async def snapshot(
+    async def capture(
         self, url: str, *, drive: DriveCallback | None = None
     ) -> Snapshot:
-        """Capture and persist an HTTP(S) URL.
+        """Capture an HTTP(S) URL and return the snapshot value.
 
         Without *drive*, Pravda navigates and waits for normal page load. With
         *drive*, the callback owns navigation and interaction on the supplied
         recording page; Pravda then captures its current state. The first
         download triggered by the callback becomes the capture subject.
 
+        The snapshot is a value: persisting it — including failed
+        captures, returned with ``error`` set — is the caller's policy.
+
         Browser machinery failures — connecting, preparing, or closing the
-        recording context — raise :class:`InfrastructureError` and persist
+        recording context — raise :class:`InfrastructureError` and capture
         nothing; a wedged-but-alive endpoint fails at the liveness deadlines
         on ``PravdaConfig.liveness`` (seconds, default 30 each). A
-        wedged-but-alive storage backend or database hangs until the caller
-        cancels, and cancellation persists nothing.
+        wedged-but-alive storage backend hangs until the caller cancels,
+        and cancellation captures nothing.
         """
         if not is_http_url(url):
-            raise ValueError(f"snapshot URL must be http(s), got {url!r}")
+            raise ValueError(f"capture URL must be http(s), got {url!r}")
         return await _capture(
             url,
             drive=drive,
             browser_ws_url=self._browser_ws_url,
-            sessionmaker=self._sessionmaker,
             storage=self._storage,
             timeouts=self._timeouts,
             liveness=self._liveness,

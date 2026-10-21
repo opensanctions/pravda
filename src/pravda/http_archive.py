@@ -14,7 +14,8 @@ logger = logging.getLogger(__name__)
 async def capture_http_archive(
     zip_path: Path, url: str, storage: Storage, download: DownloadedBody | None = None
 ) -> dict | None:
-    """Store HAR bodies and return the manifest, including any *download*."""
+    """Store HAR bodies and any *download* as artifacts, rewriting ``_file`` names;
+    return the manifest."""
     with zipfile.ZipFile(zip_path) as archive:
         if "har.har" not in archive.namelist():
             logger.warning("No har.har manifest in %s", zip_path)
@@ -26,10 +27,14 @@ async def capture_http_archive(
             await _inject_download(manifest, download, url, storage)
 
         for entry in manifest["log"]["entries"]:
-            file_name = entry["response"]["content"].get("_file")
+            content = entry["response"]["content"]
+            file_name = content.get("_file")
             if not file_name or file_name not in recorded:
                 continue
-            await storage.put_blob(file_name, archive.read(file_name), url)
+            data = archive.read(file_name)
+            content["_file"] = await storage.put_artifact(
+                data, Path(file_name).suffix, url
+            )
 
     return manifest
 

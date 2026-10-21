@@ -5,7 +5,7 @@ build-backend = "uv_build"
 [project]
 name = "opensanctions-pravda"
 version = "0.8.0"
-description = "Durable web evidence capture with a remote browser, Postgres, and content-addressed storage"
+description = "Durable web evidence capture with a remote browser and content-addressed storage"
 readme = "README.md"
 requires-python = ">=3.12"
 license = "MIT"
@@ -31,11 +31,8 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 dependencies = [
-    "aiosqlite>=0.22.1",
     "fsspec[gcs]>=2026.4.0",
     "playwright==1.64.0",
-    "psycopg[binary]>=3.3.4",
-    "sqlalchemy[asyncio]>=2.0.50",
     "unmhtml>=0.4.0",
 ]
 
