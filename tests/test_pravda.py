@@ -78,7 +78,12 @@ async def test_derive_standalone_html_inlines_and_sanitizes(pravda: Pravda, stor
 
     assert snapshot.http_status == 200
     assert snapshot.error is None
-    html = await snapshot.derive_standalone_html(storage)
+    path = await snapshot.derive_standalone_html(storage)
+    assert path.startswith("example.com/")
+    assert path.endswith(".html")
+    # Deriving is idempotent: same evidence, same content-addressed path.
+    assert await snapshot.derive_standalone_html(storage) == path
+    html = (await storage.read_artifact(path)).decode()
     assert "Standalone fixture" in html
     assert "background-color: teal" in html
     assert "data:image/png;base64," in html

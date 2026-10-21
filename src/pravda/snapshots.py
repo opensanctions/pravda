@@ -5,8 +5,6 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime
 
-from unmhtml import Document, Resource, to_standalone_html
-
 from pravda.storage import Storage
 
 
@@ -17,7 +15,8 @@ class Snapshot:
     ``id`` and ``captured_at`` are minted at capture. Failed captures are
     returned with ``error`` set and no artifacts. Read artifacts back with
     ``storage.read_artifact(path)``, or derive a self-contained rendering
-    with :meth:`derive_standalone_html`.
+    with :meth:`derive_standalone_html`, which stores the result and
+    returns its path.
     """
 
     id: uuid.UUID
@@ -31,18 +30,31 @@ class Snapshot:
     http_archive: dict | None
 
     async def derive_standalone_html(self, storage: Storage) -> str:
-        """Derive a self-contained HTML rendering of this snapshot's page.
+        """Derive, store, and return the path of a standalone HTML artifact.
 
         Reads the snapshot's stored rendered HTML and recorded HAR bodies,
         inlines stylesheets, embeds images as data URIs, and sanitizes
-        active content. Storage failures propagate, and a wedged-but-alive
-        backend hangs until the caller cancels.
+        active content. The result is stored content-addressed like other
+        artifacts and its storage-relative path returned. Requires the
+        ``unmhtml`` extra. Storage failures propagate, and a
+        wedged-but-alive backend hangs until the caller cancels.
         """
-        if self.rendered_html is None or self.http_archive is None:
+        if (
+            self.rendered_html is None
+            or self.http_archive is None
+            or self.final_url is None
+        ):
             raise ValueError(
-                f"snapshot {self.id} lacks rendered HTML or HTTP archive "
-                "evidence to derive standalone HTML from"
+                f"snapshot {self.id} lacks rendered HTML, HTTP archive, or "
+                "final URL evidence to derive standalone HTML from"
             )
+        try:
+            from unmhtml import Document, Resource, to_standalone_html
+        except ImportError as error:
+            raise ImportError(
+                "derive_standalone_html requires the unmhtml extra: "
+                "install pravda[unmhtml]"
+            ) from error
         resources = {}
         for entry in self.http_archive["log"]["entries"]:
             content = entry["response"]["content"]
@@ -57,4 +69,5 @@ class Snapshot:
 
         html = (await storage.read_artifact(self.rendered_html)).decode()
         document = Document(html=html, resources=resources, base_url=self.final_url)
-        return await asyncio.to_thread(to_standalone_html, document)
+        standalone = await asyncio.to_thread(to_standalone_html, document)
+        return await storage.put_artifact(standalone.encode(), "html", self.final_url)

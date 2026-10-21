@@ -1,34 +1,28 @@
 # Pravda
 
 Pravda is a Python library for durable web evidence capture. It drives a
-remote Playwright browser to preserve rendered HTML, full-page
-screenshots, metadata, and HAR recordings with response
-bodies. Captures are returned as immutable `Snapshot` values, and
-artifacts are written to any fsspec-compatible backend for later
-inspection or comparison. Persisting snapshots to a database is the
-application's policy.
+remote Playwright browser to capture rendered HTML, full-page screenshots,
+and HAR recordings with response bodies, written content-addressed to any
+fsspec-compatible backend. Captures return immutable `Snapshot` values;
+persisting them is the application's policy.
 
-Applications own the browser and storage backend.
-
-- **Browser**: a remote Playwright Chromium WebSocket endpoint (e.g. headed
-  Chrome under xvfb).
-- **Storage**: any fsspec URL (local path, `s3://`, `gs://`, …) for
-  content-addressed artifacts.
+- **Browser**: a remote Playwright Chromium WebSocket endpoint.
+- **Storage**: any fsspec URL (`./data`, `s3://bucket`, `gs://bucket`, …).
 
 ## Installation
 
-**Python** 3.12+
+Python 3.12+:
 
 ```bash
 pip install opensanctions-pravda
+pip install opensanctions-pravda[unmhtml]  # with standalone HTML derivation
 ```
 
 ## Quick start
 
-Build the content-addressed [`Storage`](#storage) once, then a long-lived
-`Pravda` over it. Reuse a single instance across captures — each capture
-opens its own browser connection, and the same storage handle reads
-artifacts back later.
+Build a `Storage` once, then a long-lived `Pravda` over it. Instances are
+safe to reuse: concurrent captures each open their own connection, and the
+storage handle reads artifacts back later.
 
 ```python
 from pravda import Pravda, Storage
@@ -36,49 +30,33 @@ from pravda import Pravda, Storage
 storage = Storage.from_url("./data")
 pravda = Pravda("ws://localhost:3000", storage)
 
-
-async def capture_example():
-    snapshot = await pravda.capture("https://example.com")
-    print(snapshot.id, snapshot.http_status, snapshot.rendered_html)
+snapshot = await pravda.capture("https://example.com")
+print(snapshot.id, snapshot.http_status, snapshot.rendered_html)
 ```
 
-`Pravda.capture` returns a `Snapshot` value with a client-minted `id` and
-`captured_at`. Persisting it — with your own session, in your own schema,
-in your own transaction — is up to the application.
+`capture()` returns a `Snapshot` with client-minted `id` and `captured_at`;
+artifact fields are storage-relative paths, read back with
+`storage.read_artifact(path)`.
 
 ## Configuration
 
-`Pravda(browser_ws_url, storage, *, timeouts, liveness)` takes:
+`Pravda(browser_ws_url, storage, *, timeouts, liveness)`:
 
-- `browser_ws_url` — remote Playwright WebSocket URL.
-- `storage` — a `Storage` built with `Storage.from_url(...)`: any fsspec
-  URL, such as `./data`, `s3://bucket`, or `gs://bucket`. The handle is
-  the application's, shared by capture and later artifact reads.
-- `timeouts` — a frozen `Timeouts` of wall-clock budgets for the captured
-  website, defaulting to sensible values; see its docstring for what each
-  budget does on expiry. Override individual fields with
-  `dataclasses.replace(Timeouts(), load=60)`.
-- `liveness` — a frozen `Liveness` of deadlines for Pravda's own browser
-  machinery. `setup` bounds connecting and preparing the recording context;
-  `close` bounds closing it, which finalizes the recording. Both are
-  seconds, default 30.
+- `timeouts` — wall-clock budgets bounding the captured website. Defaults
+  are sensible; see the `Timeouts` docstring.
+- `liveness` — deadlines, in seconds (default 30), for Pravda's own
+  browser machinery: connecting, preparing, and closing the recording
+  context.
+
+Browser machinery failures raise `InfrastructureError` and capture
+nothing. Storage carries no budget; its failures propagate.
 
 ## Usage
 
 ### Capture a page
 
-By default, Pravda navigates to the URL, waits for the normal `load`
-state, captures the evidence, and returns the snapshot. The target-facing
-capture is bounded by one wall-clock budget; a wedged-but-alive storage
-backend hangs until the caller cancels. Browser machinery — connecting,
-preparing, or closing the recording context — is Pravda's infrastructure,
-not the target: its failures raise `InfrastructureError` and capture
-nothing, with a wedged-but-alive endpoint failing at the `liveness`
-deadlines.
-
-For custom navigation or interaction, pass an async `drive(page, url)`
-callback. The callback owns the initial navigation; Pravda owns capture
-and cleanup, and records the state it leaves behind.
+By default Pravda navigates, waits for `load`, and captures. For custom
+navigation or interaction, pass an async `drive(page, url)` callback:
 
 ```python
 async def drive(page, url):
@@ -86,56 +64,41 @@ async def drive(page, url):
     await page.wait_for_selector(".results")
 
 
-async def capture_results():
-    pravda = Pravda(config)
-    snapshot = await pravda.capture("https://example.com", drive=drive)
+snapshot = await pravda.capture("https://example.com", drive=drive)
 ```
 
-`page` is a real `playwright.async_api.Page`. Playwright errors and timeouts
-from `drive` are returned as failed snapshots with `error` set. Other
-callback exceptions propagate and capture nothing.
-
-When the browser endpoint sends PDFs as downloads, `page.goto()` in custom
-callbacks may raise `Download is starting`; catch that Playwright error if
-the download is expected. Pravda recovers the downloaded body into the HAR.
+The callback owns navigation; Pravda owns capture and cleanup. Playwright
+errors from `drive` are returned as failed snapshots with `error` set;
+other exceptions propagate and capture nothing. Viewer-handled downloads
+(e.g. PDFs) surface in `drive` as Playwright's `Download is starting`;
+Pravda recovers the body into the HAR.
 
 ### Derive standalone HTML
 
-Derive a self-contained rendering of the captured page — stylesheets
-inlined, images embedded as data URIs, active content sanitized — from a
-snapshot's stored evidence:
-
 ```python
-html = await snapshot.derive_standalone_html(storage)
+path = await snapshot.derive_standalone_html(storage)
 ```
 
-Deriving needs only the snapshot and a storage handle — no browser — so
-it works in any process, including ones rehydrating snapshots from a
-database.
+Derives a self-contained rendering — stylesheets inlined, images embedded
+as data URIs, active content sanitized — from the snapshot's stored
+evidence, stores it like any other artifact, and returns its path. Needs
+no browser, so it works in any process. Requires the `unmhtml` extra.
 
 ## Storage
 
-Artifacts are content-addressed files organized under the captured page's
-hostname. The `Snapshot` records each artifact's storage-relative path —
-`example.com/<sha1>.html` — for `rendered_html`, `screenshot`, and each
-HAR `response.content._file` entry. Read them back with
-`storage.read_artifact(path)`. Storage failures propagate, and capture
-returns nothing.
+Artifacts are content-addressed files under the captured page's hostname
+(`example.com/<sha1>.html`). The `Snapshot` records each artifact's path:
+`rendered_html`, `screenshot`, and every HAR `response.content._file`.
 
 ## Development
 
 Requires [uv](https://docs.astral.sh/uv/) and a remote Playwright browser
-endpoint. Environment variables live in `.env`; `uv` does not read
-it automatically:
+endpoint. Environment variables live in `.env`, which `uv` does not read
+automatically:
 
 ```bash
-# Install dependencies
 uv sync
-
-# Local environment (once)
 cp .env.example .env
-
-# Validate
 uv run --env-file .env pytest
 uv run ruff check .
 uv run ruff format --check .

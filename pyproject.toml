@@ -33,7 +33,6 @@ classifiers = [
 dependencies = [
     "fsspec[gcs]>=2026.4.0",
     "playwright==1.64.0",
-    "unmhtml>=0.4.0",
 ]
 
 [project.urls]
@@ -41,6 +40,11 @@ Homepage = "https://github.com/opensanctions/pravda"
 Documentation = "https://github.com/opensanctions/pravda#readme"
 Repository = "https://github.com/opensanctions/pravda"
 Issues = "https://github.com/opensanctions/pravda/issues"
+
+[project.optional-dependencies]
+unmhtml = [
+    "unmhtml>=0.4.0",
+]
 
 [tool.uv.build-backend]
 module-name = "pravda"
@@ -57,6 +61,7 @@ dev = [
     "pytest>=9.0.3",
     "pytest-asyncio>=1.4.0",
     "ruff>=0.15.16",
+    "unmhtml>=0.4.0",
 ]
 
 [tool.pytest.ini_options]

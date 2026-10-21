@@ -22,9 +22,10 @@ Capture budgets bound the target website only and default to
 :class:`InfrastructureError` and capture nothing.
 
 Standalone HTML — a self-contained page rendering — is derived from a
-snapshot's stored evidence::
+snapshot's stored evidence and stored as a content-addressed artifact
+(the ``unmhtml`` extra must be installed)::
 
-    html = await snapshot.derive_standalone_html(storage)
+    path = await snapshot.derive_standalone_html(storage)
 """
 
 from pravda.config import Liveness, Timeouts

@@ -1157,6 +1157,10 @@ source = { editable = "." }
 dependencies = [
     { name = "fsspec", extra = ["gcs"] },
     { name = "playwright" },
+]
+
+[package.optional-dependencies]
+unmhtml = [
     { name = "unmhtml" },
 ]
 
@@ -1166,14 +1170,16 @@ dev = [
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "ruff" },
+    { name = "unmhtml" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "fsspec", extras = ["gcs"], specifier = ">=2026.4.0" },
     { name = "playwright", specifier = "==1.64.0" },
-    { name = "unmhtml", specifier = ">=0.4.0" },
+    { name = "unmhtml", marker = "extra == 'unmhtml'", specifier = ">=0.4.0" },
 ]
+provides-extras = ["unmhtml"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -1181,6 +1187,7 @@ dev = [
     { name = "pytest", specifier = ">=9.0.3" },
     { name = "pytest-asyncio", specifier = ">=1.4.0" },
     { name = "ruff", specifier = ">=0.15.16" },
+    { name = "unmhtml", specifier = ">=0.4.0" },
 ]
 
 [[package]]
