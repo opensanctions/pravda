@@ -23,7 +23,6 @@ from pravda.capture import (
 from pravda.config import Liveness, PravdaConfig, Timeouts
 from pravda.http_archive import capture_http_archive
 from pravda.snapshots import Snapshot
-from pravda.standalone import capture_standalone_html
 from pravda.storage import Storage
 
 logger = logging.getLogger(__name__)
@@ -33,8 +32,7 @@ logger = logging.getLogger(__name__)
 # returned as failed snapshots — snapshot.error may carry browser noise
 # like "Target crashed", since Playwright has one Error type. Browser
 # setup and context close are machinery: they raise InfrastructureError
-# and capture nothing. Evidence finalizes atomically, except
-# standalone-HTML derivation failures, which drop only that artifact.
+# and capture nothing. Evidence finalizes atomically.
 
 
 class InfrastructureError(Exception):
@@ -51,7 +49,6 @@ class StoredArtifacts:
 
     rendered_html: str | None = None
     screenshot: str | None = None
-    standalone_html: str | None = None
     http_archive: dict | None = None
 
 
@@ -96,26 +93,9 @@ async def _store_artifacts(
     if http_archive is None:
         raise InfrastructureError("browser context produced an invalid HTTP archive")
 
-    standalone_html = None
-    if result.html is not None:
-        try:
-            standalone_html = await capture_standalone_html(
-                http_archive_path,
-                http_archive,
-                result.html,
-                result.final_url,
-                storage,
-            )
-        except Exception as error:
-            logger.warning(
-                "Standalone HTML derivation failed for %s: %s",
-                result.final_url,
-                error,
-            )
     return StoredArtifacts(
         rendered_html=rendered_html,
         screenshot=screenshot,
-        standalone_html=standalone_html,
         http_archive=http_archive,
     )
 
@@ -185,7 +165,6 @@ async def _capture(
         error=result.error,
         rendered_html=artifacts.rendered_html,
         screenshot=artifacts.screenshot,
-        standalone_html=artifacts.standalone_html,
         http_archive=artifacts.http_archive,
     )
     logger.info(

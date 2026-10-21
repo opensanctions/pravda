@@ -21,7 +21,6 @@ def _snapshot() -> Snapshot:
         error=None,
         rendered_html="bbb.html",
         screenshot="ccc.png",
-        standalone_html="ddd.html",
         http_archive=None,
     )
 

@@ -22,11 +22,17 @@ Capture budgets bound the target website only and default to
 ``Timeouts()``; browser machinery liveness deadlines default to
 ``Liveness()``. Browser machinery failures raise
 :class:`InfrastructureError` and capture nothing.
+
+Standalone HTML — a self-contained page rendering — is derived from
+stored evidence::
+
+    html = await derive_standalone_html(snapshot, storage)
 """
 
 from pravda.config import Liveness, PravdaConfig, Timeouts
 from pravda.pravda import InfrastructureError, Pravda
 from pravda.snapshots import Snapshot
+from pravda.standalone import derive_standalone_html
 from pravda.storage import Storage
 
 __all__ = [
@@ -37,4 +43,5 @@ __all__ = [
     "Snapshot",
     "Storage",
     "Timeouts",
+    "derive_standalone_html",
 ]

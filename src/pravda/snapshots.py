@@ -22,5 +22,4 @@ class Snapshot:
     error: str | None
     rendered_html: str | None
     screenshot: str | None
-    standalone_html: str | None
     http_archive: dict | None

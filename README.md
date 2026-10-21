@@ -2,7 +2,7 @@
 
 Pravda is a Python library for durable web evidence capture. It drives a
 remote Playwright browser to preserve rendered HTML, full-page
-screenshots, standalone HTML, metadata, and HAR recordings with response
+screenshots, metadata, and HAR recordings with response
 bodies. Captures are returned as immutable `Snapshot` values, and
 artifacts are written to any fsspec-compatible backend for later
 inspection or comparison. Persisting snapshots to a database is the
@@ -98,18 +98,27 @@ When the browser endpoint sends PDFs as downloads, `page.goto()` in custom
 callbacks may raise `Download is starting`; catch that Playwright error if
 the download is expected. Pravda recovers the downloaded body into the HAR.
 
+### Derive standalone HTML
+
+Derive a self-contained rendering of the captured page — stylesheets
+inlined, images embedded as data URIs, active content sanitized — from a
+snapshot's stored evidence:
+
+```python
+from pravda import Storage, derive_standalone_html
+
+storage = Storage.from_url(config.storage_base_path)
+html = await derive_standalone_html(snapshot, storage)
+```
+
 ## Storage
 
 Artifacts are content-addressed files organized under the captured page's
 hostname. The `Snapshot` keeps storage-relative artifact names. Read
 artifacts back by name with the page's final URL:
-`storage.read_artifact(name, snapshot.final_url)` works for `rendered_html`, `screenshot`, `standalone_html`, and each HAR
-`response.content._file` entry.
-`standalone_html` is a self-contained rendering of the page —
-stylesheets inlined, images embedded as data URIs, active content sanitized —
-derived from the rendered DOM and the recorded HAR bodies for direct
-inspection; derivation failures drop only that artifact. Other storage
-failures propagate, and capture returns nothing.
+`storage.read_artifact(name, snapshot.final_url)` works for `rendered_html`,
+`screenshot`, and each HAR `response.content._file` entry. Storage failures
+propagate, and capture returns nothing.
 
 ## Development
 

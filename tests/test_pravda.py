@@ -3,8 +3,7 @@
 import pytest
 from playwright.async_api import Error as PlaywrightError
 
-import pravda.pravda as pravda_module
-from pravda import Pravda
+from pravda import Pravda, derive_standalone_html
 from tests.helpers import (
     PNG_BYTES,
     fulfill_html,
@@ -25,7 +24,6 @@ async def test_capture_unreachable_url_returns_failed_snapshot(pravda: Pravda):
     assert snapshot.rendered_html is None
     assert snapshot.screenshot is None
     assert snapshot.http_archive is None
-    assert snapshot.standalone_html is None
 
 
 @pytest.mark.asyncio
@@ -52,8 +50,8 @@ async def test_capture_drive_navigates_and_captures(pravda: Pravda, storage):
 
 
 @pytest.mark.asyncio
-async def test_capture_stores_standalone_html(pravda: Pravda, storage):
-    """A page capture also derives a self-contained HTML artifact."""
+async def test_derive_standalone_html_inlines_and_sanitizes(pravda: Pravda, storage):
+    """derive_standalone_html() inlines and sanitizes the page's resources."""
 
     async def drive(page, url):
         await page.route(url, fulfill_standalone)
@@ -82,10 +80,7 @@ async def test_capture_stores_standalone_html(pravda: Pravda, storage):
 
     assert snapshot.http_status == 200
     assert snapshot.error is None
-    assert snapshot.standalone_html is not None
-    html = (
-        await storage.read_artifact(snapshot.standalone_html, snapshot.final_url)
-    ).decode()
+    html = await derive_standalone_html(snapshot, storage)
     assert "Standalone fixture" in html
     assert "background-color: teal" in html
     assert "data:image/png;base64," in html
@@ -93,27 +88,15 @@ async def test_capture_stores_standalone_html(pravda: Pravda, storage):
 
 
 @pytest.mark.asyncio
-async def test_capture_standalone_failure_keeps_primary_evidence(
-    pravda: Pravda, monkeypatch
+async def test_derive_standalone_html_requires_capture_evidence(
+    pravda: Pravda, storage
 ):
-    """A standalone-HTML derivation failure degrades to a missing artifact."""
+    """derive_standalone_html() rejects snapshots without stored evidence."""
 
-    async def failing_derivation(*args):
-        raise ValueError("conversion failed")
+    snapshot = await pravda.capture("https://localhost:39999/")
 
-    monkeypatch.setattr(pravda_module, "capture_standalone_html", failing_derivation)
-
-    async def drive(page, url):
-        await page.route(url, fulfill_html)
-        await page.goto(url, wait_until="load")
-
-    snapshot = await pravda.capture("https://example.com", drive=drive)
-
-    assert snapshot.http_status == 200
-    assert snapshot.error is None
-    assert snapshot.rendered_html is not None
-    assert snapshot.http_archive is not None
-    assert snapshot.standalone_html is None
+    with pytest.raises(ValueError, match="evidence to derive standalone HTML"):
+        await derive_standalone_html(snapshot, storage)
 
 
 @pytest.mark.asyncio
@@ -182,7 +165,6 @@ async def test_capture_drive_download_uses_download_url_and_skips_blank_page(
     assert snapshot.rendered_html is None
     assert snapshot.screenshot is None
     assert snapshot.http_archive is not None
-    assert snapshot.standalone_html is None
 
 
 @pytest.mark.asyncio
@@ -203,7 +185,6 @@ async def test_capture_drive_playwright_error_returns_failed_snapshot(
     assert snapshot.rendered_html is None
     assert snapshot.screenshot is None
     assert snapshot.http_archive is None
-    assert snapshot.standalone_html is None
 
 
 @pytest.mark.asyncio

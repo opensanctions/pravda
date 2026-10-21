@@ -20,6 +20,9 @@ Pravda is an async Python library for capturing durable web evidence with a remo
 ## Public behavior
 
 `Pravda` is a long-lived object that exposes an async `capture()` method.
+Standalone HTML — a self-contained page rendering — is derived from a
+snapshot's stored evidence by the exported async function
+`derive_standalone_html(snapshot, storage)`.
 
 - Without `drive`, `capture()` owns navigation and the complete capture pipeline.
 - The target-facing capture must remain bounded by one wall-clock timeout.

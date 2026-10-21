@@ -1,33 +1,40 @@
-"""Standalone HTML derived from captured evidence."""
+"""Standalone HTML derived from stored capture evidence."""
 
 import asyncio
-import zipfile
-from pathlib import Path
 
 from unmhtml import Document, Resource, to_standalone_html
 
+from pravda.snapshots import Snapshot
 from pravda.storage import Storage
 
 
-async def capture_standalone_html(
-    zip_path: Path, manifest: dict, html: str, final_url: str, storage: Storage
-) -> str:
-    """Derive and store a self-contained HTML version of the page."""
-    with zipfile.ZipFile(zip_path) as archive:
-        recorded = set(archive.namelist())
-        resources = {}
-        for entry in manifest["log"]["entries"]:
-            content = entry["response"]["content"]
-            file_name = content.get("_file")
-            if not file_name or file_name not in recorded:
-                continue
-            # A HAR MIME type may carry parameters ("text/css; charset=utf-8")
-            # that would corrupt the data URIs built from it.
-            mime_type = content.get("mimeType", "").partition(";")[0].strip()
-            resources[entry["request"]["url"]] = Resource(
-                archive.read(file_name), mime_type or None
-            )
+async def derive_standalone_html(snapshot: Snapshot, storage: Storage) -> str:
+    """Derive a self-contained HTML rendering of *snapshot*'s page.
 
-    document = Document(html=html, resources=resources, base_url=final_url)
-    standalone = await asyncio.to_thread(to_standalone_html, document)
-    return await storage.put_artifact(standalone.encode(), "html", final_url)
+    Reads the snapshot's stored rendered HTML and recorded HAR bodies,
+    inlines stylesheets, embeds images as data URIs, and sanitizes active
+    content. Storage failures propagate, and a wedged-but-alive backend
+    hangs until the caller cancels.
+    """
+    if snapshot.rendered_html is None or snapshot.http_archive is None:
+        raise ValueError(
+            f"snapshot {snapshot.id} lacks rendered HTML or HTTP archive "
+            "evidence to derive standalone HTML from"
+        )
+    resources = {}
+    for entry in snapshot.http_archive["log"]["entries"]:
+        content = entry["response"]["content"]
+        file_name = content.get("_file")
+        if not file_name:
+            continue
+        # A HAR MIME type may carry parameters ("text/css; charset=utf-8")
+        # that would corrupt the data URIs built from it.
+        mime_type = content.get("mimeType", "").partition(";")[0].strip()
+        data = await storage.read_artifact(file_name, snapshot.final_url)
+        resources[entry["request"]["url"]] = Resource(data, mime_type or None)
+
+    html = (
+        await storage.read_artifact(snapshot.rendered_html, snapshot.final_url)
+    ).decode()
+    document = Document(html=html, resources=resources, base_url=snapshot.final_url)
+    return await asyncio.to_thread(to_standalone_html, document)
