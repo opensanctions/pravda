@@ -24,14 +24,15 @@ snapshot's stored evidence by the async method
 `snapshot.derive_standalone_html(storage)`.
 
 - Without `drive`, `capture()` owns navigation and the complete capture pipeline.
-- The target-facing capture must remain bounded by one wall-clock timeout,
-  and closing the recording context carries a `Timeouts.close` budget
-  whose expiry records a failed snapshot. Browser setup carries a fixed
-  internal liveness budget whose expiry raises. Storage carries no
-  budget: dead infrastructure fails on its own errors, and a
-  wedged-but-alive backend hangs until the caller cancels.
+- One capture attempt is bounded by one wall-clock timeout; `Timeouts`
+  covers the whole attempt, closing the recording context included.
+  Storage carries no budget: dead infrastructure fails on its own
+  errors, and a wedged-but-alive backend hangs until the caller cancels.
 - With `drive(page, url)`, the callback owns initial navigation and interaction; Pravda still owns capture and cleanup.
-- `capture()` raises only when a failure is provably not about the URL: browser setup (`InfrastructureError` — nothing about the URL was attempted), storage failures, non-Playwright callback exceptions, and cancellation. Navigation, capture, and Playwright callback failures, and recording finalization (closing the context, producing the HAR) — where a wedged page cannot be told from a wedged endpoint — are returned as failed snapshots (`error` set); persisting them is the caller's policy.
+- `capture()` raises only when a failure is provably not about the URL:
+  storage failures, non-Playwright callback exceptions, and cancellation.
+  Everything else, including recording finalization, is returned as a
+  failed snapshot (`error` set); persisting them is the caller's policy.
 - Concurrent `capture()` calls are safe: each opens its own browser connection, recording context, and temporary directory.
 
 ## Downloads

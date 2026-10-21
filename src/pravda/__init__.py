@@ -16,10 +16,7 @@ snapshots — including failed captures, returned with ``error`` set — is
 the application's policy: Pravda owns the browser, and the storage
 handle is the application's, shared by capture and later reads.
 
-Capture budgets default to ``Timeouts()`` and bound one capture
-attempt, closing the recording context included. A browser setup
-failure raises :class:`InfrastructureError` and captures nothing; every
-other capture failure is returned with ``error`` set.
+Capture budgets default to ``Timeouts()``.
 
 Standalone HTML — a self-contained page rendering — is derived from a
 snapshot's stored evidence and stored as a content-addressed artifact

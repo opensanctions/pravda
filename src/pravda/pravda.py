@@ -26,15 +26,11 @@ from pravda.storage import Storage
 
 logger = logging.getLogger(__name__)
 
-# A capture raises only when a failure is provably not about the URL:
-# browser setup, before anything is attempted (InfrastructureError), and
-# storage, which reports its own failures. Everything after the first
-# navigation — including finalizing the recording, where a wedged page
-# cannot be told from a wedged endpoint — is returned as a failed
-# snapshot for the caller to adjudicate.
+# Playwright has one Error type, so capture failures are returned as
+# failed snapshots rather than raised: page failure and browser noise
+# ("Target crashed") can't be told apart.
 
-# Browser setup is Pravda's machinery, not a knob: connecting and
-# preparing the recording context carry one fixed liveness budget, in
+# Browser setup is Pravda's machinery, not a knob: one fixed budget, in
 # seconds.
 _SETUP_BUDGET = 30.0
 
@@ -44,11 +40,11 @@ class InfrastructureError(Exception):
 
 
 class _CaptureFailure(Exception):
-    """The target-facing capture exceeded its wall-clock budget."""
+    """The capture exceeded its wall-clock budget."""
 
 
 class _FinalizationError(Exception):
-    """The recording could not be finalized; returned as a failed snapshot."""
+    """The recording could not be finalized."""
 
 
 @dataclass
@@ -61,7 +57,7 @@ class StoredArtifacts:
 
 
 async def _close_context(context: BrowserContext, timeouts: Timeouts) -> None:
-    """Close the recording context, finalizing its HAR on disk."""
+    """Close the recording context, flushing its HAR to disk."""
     try:
         async with asyncio.timeout(timeouts.close):
             await context.close()
@@ -190,8 +186,7 @@ class Pravda:
     """Configured async entry point for evidence capture.
 
     Each concurrent capture owns its browser connection, recording
-    context, and temporary directory. Captures return :class:`Snapshot`
-    values; persisting them is the application's policy.
+    context, and temporary directory.
     """
 
     def __init__(
@@ -215,16 +210,9 @@ class Pravda:
         recording page; Pravda then captures its current state. The first
         download triggered by the callback becomes the capture subject.
 
-        The snapshot is a value: persisting it — including failed
-        captures, returned with ``error`` set — is the caller's policy.
-
-        A browser setup failure — connecting to the endpoint or preparing
-        the recording context, against a fixed liveness budget — raises
-        :class:`InfrastructureError` and captures nothing: nothing about
-        the URL was attempted. Every other failure, including closing
-        the recording context, is returned as a failed snapshot. Storage
-        carries no budget: a wedged-but-alive backend hangs until the
-        caller cancels, and cancellation captures nothing.
+        The snapshot is a value: a failed capture is returned with
+        ``error`` set rather than raised; persisting snapshots is the
+        caller's policy.
         """
         if not is_http_url(url):
             raise ValueError(f"capture URL must be http(s), got {url!r}")

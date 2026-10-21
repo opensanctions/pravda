@@ -7,24 +7,19 @@ from dataclasses import dataclass
 class Timeouts:
     """Wall-clock budgets for one capture attempt, in seconds.
 
-    Expiry is recorded — a returned failed snapshot, or a dropped
-    artifact — because a failed attempt is a finding about the target,
-    or cannot be told from one.
+    Expiry never raises: it fails the snapshot, or drops the artifact
+    it bounded.
 
-        snapshot: One wall-clock bound over the whole target-facing capture;
-            expiry fails the snapshot.
+        snapshot: One wall-clock bound over the whole target-facing capture.
         nav: Reaching the first commit of the target URL.
         load: The document's ``load`` event after commit.
         drive: The caller-provided drive callback.
         download: Waiting for the target's download, then saving it.
-        dom_capture: Waiting for the DOM to settle, then reading it; expiry
-            drops the rendered HTML.
+        dom_capture: Waiting for the DOM to settle, then reading it.
         dom_settle_quiet: How long the DOM must stay mutation-free before
             capture; a duration, not a ceiling.
-        screenshot: The full-page screenshot; expiry drops it.
-        close: Closing the recording context, which finalizes its
-            recording; expiry fails the snapshot, because a page that
-            wedged the recording cannot be told from a wedged endpoint.
+        screenshot: The full-page screenshot.
+        close: Closing the recording context, which finalizes its recording.
     """
 
     snapshot: float = 240.0
