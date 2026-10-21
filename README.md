@@ -116,11 +116,11 @@ database.
 ## Storage
 
 Artifacts are content-addressed files organized under the captured page's
-hostname. The `Snapshot` keeps storage-relative artifact names. Read
-artifacts back by name with the page's final URL:
-`storage.read_artifact(name, snapshot.final_url)` works for `rendered_html`,
-`screenshot`, and each HAR `response.content._file` entry. Storage failures
-propagate, and capture returns nothing.
+hostname. The `Snapshot` records each artifact's storage-relative path —
+`example.com/<sha1>.html` — for `rendered_html`, `screenshot`, and each
+HAR `response.content._file` entry. Read them back with
+`storage.read_artifact(path)`. Storage failures propagate, and capture
+returns nothing.
 
 ## Development
 

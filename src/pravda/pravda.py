@@ -26,12 +26,9 @@ from pravda.storage import Storage
 
 logger = logging.getLogger(__name__)
 
-# The return/raise boundary is the capture zone, not the failure's
-# nature: navigation, capture, and Playwright callback failures are
-# returned as failed snapshots — snapshot.error may carry browser noise
-# like "Target crashed", since Playwright has one Error type. Browser
-# setup and context close are machinery: they raise InfrastructureError
-# and capture nothing. Evidence finalizes atomically.
+# Playwright has one Error type, so failures inside the target-facing
+# capture are returned as failed snapshots rather than raised: page
+# failure and browser noise ("Target crashed") can't be told apart.
 
 
 class InfrastructureError(Exception):
@@ -44,7 +41,7 @@ class _CaptureFailure(Exception):
 
 @dataclass
 class StoredArtifacts:
-    """Stored artifact names and manifest produced by finalization."""
+    """Stored artifact paths and manifest produced by finalization."""
 
     rendered_html: str | None = None
     screenshot: str | None = None

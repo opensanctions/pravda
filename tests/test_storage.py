@@ -6,16 +6,14 @@ from pravda.storage import Storage, cas_name, normalize_hostname
 
 
 @pytest.mark.asyncio
-async def test_put_artifact_stores_at_content_address(storage: Storage):
+async def test_put_artifact_returns_prefixed_content_address(storage: Storage):
     data = b"<html>hello</html>"
     url = "https://www.example.com/page"
 
-    name = await storage.put_artifact(data, "html", url)
+    path = await storage.put_artifact(data, "html", url)
 
-    assert name == cas_name(data, "html")
-    # Under the URL's normalized hostname (www stripped).
-    path = Path(storage.base_path) / "example.com" / name
-    assert path.read_bytes() == data
+    assert path == f"example.com/{cas_name(data, 'html')}"
+    assert (Path(storage.base_path) / path).read_bytes() == data
 
 
 @pytest.mark.asyncio
@@ -30,16 +28,15 @@ async def test_put_artifact_deduplicates(storage: Storage):
 @pytest.mark.asyncio
 async def test_read_artifact_returns_stored_bytes(storage: Storage):
     data = b"hello pravda"
-    url = "https://example.com/path"
-    name = await storage.put_artifact(data, "txt", url)
+    path = await storage.put_artifact(data, "txt", "https://example.com/path")
 
-    assert await storage.read_artifact(name, url) == data
+    assert await storage.read_artifact(path) == data
 
 
 @pytest.mark.asyncio
 async def test_read_artifact_missing_artifact_raises(storage: Storage):
     with pytest.raises(FileNotFoundError):
-        await storage.read_artifact("missing.txt", "https://example.com/path")
+        await storage.read_artifact("example.com/missing.txt")
 
 
 def test_normalize_hostname_lowercases_strips_www():

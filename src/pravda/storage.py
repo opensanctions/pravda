@@ -57,22 +57,21 @@ class Storage:
             fs = AsyncFileSystemWrapper(fs)
         return cls(fs=fs, base_path=base_path)
 
-    def _content_prefix(self, url: str) -> str:
-        """Return the storage prefix for *url*."""
-        return os.path.join(self.base_path, normalize_hostname(url))
-
     async def put_artifact(self, data: bytes, ext: str, url: str) -> str:
-        """Store *data* content-addressed under *url*'s prefix; return its name."""
-        host_dir = self._content_prefix(url)
-        name = cas_name(data, ext)
-        path = os.path.join(host_dir, name)
+        """Store *data* content-addressed under *url*'s hostname prefix.
 
-        await self.fs._makedirs(host_dir, exist_ok=True)
-        await self.fs._pipe_file(path, data)
+        Return its storage-relative path, e.g. ``example.com/<sha1>.html``.
+        """
+        path = os.path.join(normalize_hostname(url), cas_name(data, ext))
 
-        logger.debug("Stored artifact %s (%d bytes)", name, len(data))
-        return name
+        await self.fs._makedirs(
+            os.path.join(self.base_path, os.path.dirname(path)), exist_ok=True
+        )
+        await self.fs._pipe_file(os.path.join(self.base_path, path), data)
 
-    async def read_artifact(self, name: str, url: str) -> bytes:
-        """Return the bytes of artifact *name* under *url*'s prefix."""
-        return await self.fs._cat_file(os.path.join(self._content_prefix(url), name))
+        logger.debug("Stored artifact %s (%d bytes)", path, len(data))
+        return path
+
+    async def read_artifact(self, path: str) -> bytes:
+        """Return the bytes of the artifact at storage-relative *path*."""
+        return await self.fs._cat_file(os.path.join(self.base_path, path))

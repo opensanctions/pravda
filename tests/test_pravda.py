@@ -43,9 +43,7 @@ async def test_capture_drive_navigates_and_captures(pravda: Pravda, storage):
     assert snapshot.error is None
     assert snapshot.rendered_html.endswith(".html")
     assert snapshot.http_archive is not None
-    html = (
-        await storage.read_artifact(snapshot.rendered_html, snapshot.final_url)
-    ).decode()
+    html = (await storage.read_artifact(snapshot.rendered_html)).decode()
     assert "Hello from Pravda" in html
 
 
@@ -135,9 +133,7 @@ async def test_capture_drive_interaction_and_readiness_captured(
 
     assert snapshot.http_status == 200
     assert snapshot.error is None
-    html = (
-        await storage.read_artifact(snapshot.rendered_html, snapshot.final_url)
-    ).decode()
+    html = (await storage.read_artifact(snapshot.rendered_html)).decode()
     assert "Before interaction" in html
     assert "After interaction secret" in html
 

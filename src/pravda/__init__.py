@@ -10,8 +10,8 @@ Build a content-addressed :class:`Storage` once, then a long-lived
     snapshot = await pravda.capture(url)
 
 Capture returns a :class:`Snapshot` value with client-minted ``id`` and
-``captured_at``; artifact fields are storage-relative names, read back
-with ``storage.read_artifact(name, snapshot.final_url)``. Persisting
+``captured_at``; artifact fields are storage-relative paths, read back
+with ``storage.read_artifact(path)``. Persisting
 snapshots — including failed captures, returned with ``error`` set — is
 the application's policy: Pravda owns the browser, and the storage
 handle is the application's, shared by capture and later reads.

@@ -58,17 +58,18 @@ async def test_download_body_folded_into_har(storage: Storage):
         ),
     )
 
-    prefix = Path(storage.base_path) / "example.com"
+    prefix = Path(storage.base_path)
     entries = manifest["log"]["entries"]
 
     normal = entries[0]["response"]["content"]
-    assert normal["_file"] == cas_name(b"hello", "html")
+    assert normal["_file"] == f"example.com/{cas_name(b'hello', 'html')}"
     assert (prefix / normal["_file"]).read_bytes() == b"hello"
 
     # The download entry references its body like any other entry.
     pdf_entry = entries[1]["response"]["content"]
     assert pdf_entry["mimeType"] == "application/pdf"
     assert pdf_entry["size"] == len(pdf_bytes)
+    assert pdf_entry["_file"].startswith("example.com/")
     assert pdf_entry["_file"].endswith(".pdf")
     assert (prefix / pdf_entry["_file"]).read_bytes() == pdf_bytes
 

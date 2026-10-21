@@ -12,12 +12,12 @@ from pravda.storage import Storage
 
 @dataclass(frozen=True)
 class Snapshot:
-    """A capture outcome; artifact fields are storage-relative names.
+    """A capture outcome; artifact fields are storage-relative paths.
 
     ``id`` and ``captured_at`` are minted at capture. Failed captures are
     returned with ``error`` set and no artifacts. Read artifacts back with
-    ``storage.read_artifact(name, snapshot.final_url)``, or derive a
-    self-contained rendering with :meth:`derive_standalone_html`.
+    ``storage.read_artifact(path)``, or derive a self-contained rendering
+    with :meth:`derive_standalone_html`.
     """
 
     id: uuid.UUID
@@ -52,11 +52,9 @@ class Snapshot:
             # A HAR MIME type may carry parameters ("text/css; charset=utf-8")
             # that would corrupt the data URIs built from it.
             mime_type = content.get("mimeType", "").partition(";")[0].strip()
-            data = await storage.read_artifact(file_name, self.final_url)
+            data = await storage.read_artifact(file_name)
             resources[entry["request"]["url"]] = Resource(data, mime_type or None)
 
-        html = (
-            await storage.read_artifact(self.rendered_html, self.final_url)
-        ).decode()
+        html = (await storage.read_artifact(self.rendered_html)).decode()
         document = Document(html=html, resources=resources, base_url=self.final_url)
         return await asyncio.to_thread(to_standalone_html, document)
